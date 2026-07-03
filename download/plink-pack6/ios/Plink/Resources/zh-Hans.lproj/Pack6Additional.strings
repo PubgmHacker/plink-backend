@@ -1,0 +1,56 @@
+"settings.account" = "账户";
+"settings.subscription" = "订阅";
+"settings.currentPlan" = "当前方案";
+"settings.free" = "免费版";
+"settings.buyPremium" = "购买 Premium";
+
+"home.createRoom" = "创建房间";
+"home.joinRoom" = "加入";
+"home.watchingNow" = "正在观看";
+"home.recommendations" = "推荐";
+
+"rooms.title" = "房间";
+"rooms.my" = "我的";
+"rooms.join" = "加入";
+"rooms.requests" = "请求";
+"rooms.enterCode" = "输入房间代码";
+"rooms.joinButton" = "加入";
+"rooms.noRequests" = "没有新请求";
+
+"room.exit" = "退出房间";
+"room.chat" = "聊天";
+"room.participants" = "参与者";
+"room.share" = "分享";
+"room.playPause" = "播放/暂停";
+"room.seekBack" = "后退 10 秒";
+"room.seekForward" = "前进 10 秒";
+"room.typeMessage" = "输入消息...";
+"room.host" = "房主";
+
+"serviceSelection.title" = "选择服务";
+"serviceSelection.direct" = "直播流";
+"serviceSelection.cinemas" = "影院";
+"serviceSelection.universal" = "通用";
+
+"roomSetup.title" = "创建房间";
+"roomSetup.name" = "房间名称";
+"roomSetup.participants" = "参与者";
+"roomSetup.max" = "最多:";
+"roomSetup.privacy" = "隐私";
+"roomSetup.publicRoom" = "公开";
+"roomSetup.byLink" = "通过链接";
+"roomSetup.privateRoom" = "私密";
+"roomSetup.password" = "密码(可选)";
+"roomSetup.create" = "创建";
+"roomSetup.cancel" = "取消";
+
+"profile.title" = "个人资料";
+"profile.friends" = "好友";
+"profile.hours" = "小时";
+"profile.rooms" = "房间";
+"profile.settings" = "设置";
+
+"ai.title" = "AI 助手";
+"ai.placeholder" = "问点什么...";
+"ai.name" = "Plink AI";
+"ai.error" = "抱歉，无法获取回复。";

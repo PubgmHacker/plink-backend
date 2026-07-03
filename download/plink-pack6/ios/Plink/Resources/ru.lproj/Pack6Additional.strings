@@ -1,0 +1,56 @@
+"settings.account" = "Аккаунт";
+"settings.subscription" = "Подписка";
+"settings.currentPlan" = "Текущий план";
+"settings.free" = "Бесплатная версия";
+"settings.buyPremium" = "Купить Premium";
+
+"home.createRoom" = "Создать комнату";
+"home.joinRoom" = "Присоединиться";
+"home.watchingNow" = "Смотрят сейчас";
+"home.recommendations" = "Рекомендации";
+
+"rooms.title" = "Комнаты";
+"rooms.my" = "Мои";
+"rooms.join" = "Войти";
+"rooms.requests" = "Запросы";
+"rooms.enterCode" = "Введите код комнаты";
+"rooms.joinButton" = "Войти";
+"rooms.noRequests" = "Нет новых запросов";
+
+"room.exit" = "Выйти из комнаты";
+"room.chat" = "Чат";
+"room.participants" = "Участники";
+"room.share" = "Поделиться";
+"room.playPause" = "Воспроизведение/Пауза";
+"room.seekBack" = "Назад 10 секунд";
+"room.seekForward" = "Вперёд 10 секунд";
+"room.typeMessage" = "Введите сообщение...";
+"room.host" = "Хост";
+
+"serviceSelection.title" = "Выберите сервис";
+"serviceSelection.direct" = "Прямые потоки";
+"serviceSelection.cinemas" = "Кинотеатры";
+"serviceSelection.universal" = "Универсальные";
+
+"roomSetup.title" = "Создать комнату";
+"roomSetup.name" = "Название комнаты";
+"roomSetup.participants" = "Участники";
+"roomSetup.max" = "Максимум:";
+"roomSetup.privacy" = "Приватность";
+"roomSetup.publicRoom" = "Публичная";
+"roomSetup.byLink" = "По ссылке";
+"roomSetup.privateRoom" = "Приватная";
+"roomSetup.password" = "Пароль (опц.)";
+"roomSetup.create" = "Создать";
+"roomSetup.cancel" = "Отмена";
+
+"profile.title" = "Профиль";
+"profile.friends" = "Друзья";
+"profile.hours" = "Часов";
+"profile.rooms" = "Комнаты";
+"profile.settings" = "Настройки";
+
+"ai.title" = "ИИ Помощник";
+"ai.placeholder" = "Спросите что-нибудь...";
+"ai.name" = "Plink AI";
+"ai.error" = "Извините, не удалось получить ответ.";

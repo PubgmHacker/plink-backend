@@ -1,0 +1,56 @@
+"settings.account" = "Account";
+"settings.subscription" = "Subscription";
+"settings.currentPlan" = "Current plan";
+"settings.free" = "Free version";
+"settings.buyPremium" = "Get Premium";
+
+"home.createRoom" = "Create Room";
+"home.joinRoom" = "Join";
+"home.watchingNow" = "Watching Now";
+"home.recommendations" = "Recommendations";
+
+"rooms.title" = "Rooms";
+"rooms.my" = "My";
+"rooms.join" = "Join";
+"rooms.requests" = "Requests";
+"rooms.enterCode" = "Enter room code";
+"rooms.joinButton" = "Join";
+"rooms.noRequests" = "No new requests";
+
+"room.exit" = "Exit room";
+"room.chat" = "Chat";
+"room.participants" = "Participants";
+"room.share" = "Share";
+"room.playPause" = "Play/Pause";
+"room.seekBack" = "Back 10 seconds";
+"room.seekForward" = "Forward 10 seconds";
+"room.typeMessage" = "Type a message...";
+"room.host" = "Host";
+
+"serviceSelection.title" = "Select service";
+"serviceSelection.direct" = "Direct streams";
+"serviceSelection.cinemas" = "Cinemas";
+"serviceSelection.universal" = "Universal";
+
+"roomSetup.title" = "Create room";
+"roomSetup.name" = "Room name";
+"roomSetup.participants" = "Participants";
+"roomSetup.max" = "Max:";
+"roomSetup.privacy" = "Privacy";
+"roomSetup.publicRoom" = "Public";
+"roomSetup.byLink" = "By link";
+"roomSetup.privateRoom" = "Private";
+"roomSetup.password" = "Password (optional)";
+"roomSetup.create" = "Create";
+"roomSetup.cancel" = "Cancel";
+
+"profile.title" = "Profile";
+"profile.friends" = "Friends";
+"profile.hours" = "Hours";
+"profile.rooms" = "Rooms";
+"profile.settings" = "Settings";
+
+"ai.title" = "AI Assistant";
+"ai.placeholder" = "Ask something...";
+"ai.name" = "Plink AI";
+"ai.error" = "Sorry, couldn't get a response.";
