@@ -1,51 +1,50 @@
 import SwiftUI
 
-// MARK: - HomeView (Pack 6: исправления UI)
-// 1. Кнопки "Создать комнату" и "Присоединиться" — с надписями
-// 2. Кнопка "Присоединиться" открывает Rooms tab + "Войти" subtab
-// 3. Убрана шестерёнка с profile icon
-// 4. Восстановлены "Смотрят сейчас" и рекомендации
-// 5. Premium button — открывает PaywallView
+// MARK: - HomeView (Pack 6.1: развёрнутые кнопки по умолчанию)
+// Кнопки "Создать комнату" и "Присоединиться":
+// - Изначально развёрнуты (с надписями)
+// - Через 6 сек бездействия сворачиваются в иконки
+// - При тапе разворачиваются обратно + сброс таймера
+// - При скролле/любом тапе сбрасывают таймер
 
 struct HomeViewFixed: View {
     @EnvironmentObject private var tabRouter: TabRouter
     @State private var showPaywall = false
     @State private var showCreateRoom = false
     
+    // Pack 6.1: состояние развёрнутости кнопок
+    @State private var buttonsExpanded: Bool = true
+    @State private var collapseTask: Task<Void, Never>?
+    
     var body: some View {
         ScrollView {
             VStack(spacing: 24) {
-                // Hero header
                 heroSection
-                
-                // Action buttons (Pack 6: с надписями)
                 actionButtons
-                
-                // "Смотрят сейчас" (Pack 6: восстановлено)
                 watchingNowSection
-                
-                // Рекомендации (Pack 6: восстановлено)
                 recommendationsSection
             }
             .padding()
         }
         .background(Color.plinkBgGradient)
-        .sheet(isPresented: $showPaywall) {
-            PaywallView()
+        // Pack 6.1: любой тап сбрасывает таймер сворачивания
+        .onTapGesture { resetCollapseTimer() }
+        .sheet(isPresented: $showPaywall) { PaywallView() }
+        .sheet(isPresented: $showCreateRoom) { CreateRoomView() }
+        .task {
+            // Pack 6.1: запустить таймер при первом появлении
+            startCollapseTimer()
         }
-        .sheet(isPresented: $showCreateRoom) {
-            CreateRoomView()
+        .onDisappear {
+            collapseTask?.cancel()
         }
     }
-    
-    // MARK: - Hero
     
     private var heroSection: some View {
         VStack(spacing: 12) {
             Text("Plink")
                 .font(.largeTitle.bold())
                 .foregroundStyle(Color.plinkGradient)
-            
             Text("Смотрите вместе с друзьями")
                 .font(.subheadline)
                 .foregroundStyle(.plinkTextSecondary)
@@ -53,75 +52,60 @@ struct HomeViewFixed: View {
         .padding(.top, 20)
     }
     
-    // MARK: - Action Buttons (Pack 6: с надписями)
+    // MARK: - Action Buttons (Pack 6.1: expand/collapse)
     
     private var actionButtons: some View {
         HStack(spacing: 12) {
             Button {
                 showCreateRoom = true
                 HapticManager.shared.tap()
+                resetCollapseTimer()
             } label: {
-                VStack(spacing: 8) {
-                    Image(systemName: "plus.circle.fill")
-                        .font(.system(size: 32))
-                    Text("Создать комнату")
-                        .font(.subheadline.bold())
-                }
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 20)
-                .background(Color.plinkGradient, in: RoundedRectangle(cornerRadius: 16))
-                .foregroundStyle(.white)
+                ActionButton(
+                    icon: "plus.circle.fill",
+                    title: "Создать комнату",
+                    isExpanded: buttonsExpanded,
+                    gradient: Color.plinkGradient
+                )
             }
             .accessibleButton("Создать комнату", hint: "Открывает создание новой комнаты")
             
             Button {
-                // Pack 6: переключиться на Rooms tab + "Войти" subtab
                 tabRouter.switchToJoinRoom()
                 HapticManager.shared.tap()
+                resetCollapseTimer()
             } label: {
-                VStack(spacing: 8) {
-                    Image(systemName: "arrow.right.circle.fill")
-                        .font(.system(size: 32))
-                    Text("Присоединиться")
-                        .font(.subheadline.bold())
-                }
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 20)
-                .background(Color.plinkWarmGradient, in: RoundedRectangle(cornerRadius: 16))
-                .foregroundStyle(.white)
+                ActionButton(
+                    icon: "arrow.right.circle.fill",
+                    title: "Присоединиться",
+                    isExpanded: buttonsExpanded,
+                    gradient: Color.plinkWarmGradient
+                )
             }
             .accessibleButton("Присоединиться", hint: "Открывает вкладку Комнаты, раздел Войти")
         }
+        .animation(.spring(response: 0.4, dampingFraction: 0.8), value: buttonsExpanded)
     }
     
-    // MARK: - Watching Now (Pack 6: восстановлено)
+    // MARK: - Sections
     
     private var watchingNowSection: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Image(systemName: "tv.fill")
-                    .foregroundStyle(.plinkAccent)
-                Text("Смотрят сейчас")
-                    .font(.headline)
+                Image(systemName: "tv.fill").foregroundStyle(.plinkAccent)
+                Text("Смотрят сейчас").font(.headline)
                 Spacer()
             }
-            
-            // Список активных комнат
             ActiveRoomsList()
         }
     }
     
-    // MARK: - Recommendations (Pack 6: восстановлено)
-    
     private var recommendationsSection: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Image(systemName: "sparkles")
-                    .foregroundStyle(.plinkSecondary)
-                Text("Рекомендации")
-                    .font(.headline)
+                Image(systemName: "sparkles").foregroundStyle(.plinkSecondary)
+                Text("Рекомендации").font(.headline)
                 Spacer()
-                
                 Button {
                     showPaywall = true
                 } label: {
@@ -132,15 +116,78 @@ struct HomeViewFixed: View {
                         .background(Color.plinkRainbow, in: Capsule())
                         .foregroundStyle(.white)
                 }
-                .accessibleButton("Plink Plus Premium", hint: "Открывает премиум подписку")
+                .accessibleButton("Plink Plus Premium")
             }
-            
             RecommendationsList()
+        }
+    }
+    
+    // MARK: - Collapse Timer (Pack 6.1)
+    
+    private func startCollapseTimer() {
+        collapseTask?.cancel()
+        collapseTask = Task {
+            try? await Task.sleep(nanoseconds: 6_000_000_000) // 6 секунд
+            if !Task.isCancelled {
+                await MainActor.run {
+                    withAnimation(.spring(response: 0.5, dampingFraction: 0.8)) {
+                        buttonsExpanded = false
+                    }
+                }
+            }
+        }
+    }
+    
+    private func resetCollapseTimer() {
+        // Развернуть мгновенно
+        if !buttonsExpanded {
+            withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
+                buttonsExpanded = true
+            }
+        }
+        // Перезапустить таймер
+        startCollapseTimer()
+    }
+}
+
+// MARK: - Action Button (expand/collapse component)
+
+private struct ActionButton: View {
+    let icon: String
+    let title: String
+    let isExpanded: Bool
+    let gradient: LinearGradient
+    
+    var body: some View {
+        ZStack {
+            if isExpanded {
+                // Развернутое состояние: иконка + надпись
+                VStack(spacing: 8) {
+                    Image(systemName: icon)
+                        .font(.system(size: 32))
+                    Text(title)
+                        .font(.subheadline.bold())
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 20)
+                .background(gradient, in: RoundedRectangle(cornerRadius: 16))
+                .foregroundStyle(.white)
+                .transition(.scale(scale: 0.9).combined(with: .opacity))
+            } else {
+                // Свёрнутое состояние: только иконка
+                Image(systemName: icon)
+                    .font(.system(size: 28))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 16)
+                    .background(gradient, in: RoundedRectangle(cornerRadius: 12))
+                    .foregroundStyle(.white)
+                    .transition(.scale(scale: 1.1).combined(with: .opacity))
+            }
         }
     }
 }
 
-// MARK: - TabRouter (Pack 6: для переключения на Rooms/Join)
+// MARK: - TabRouter
 
 @MainActor
 final class TabRouter: ObservableObject {
@@ -173,7 +220,7 @@ final class TabRouter: ObservableObject {
     }
 }
 
-// MARK: - Stubs (replace with real views)
+// MARK: - Stubs
 
 private struct ActiveRoomsList: View {
     var body: some View {
@@ -213,8 +260,6 @@ private struct RecommendationsList: View {
         }
     }
 }
-
-// MARK: - Preview
 
 #Preview {
     HomeViewFixed()
