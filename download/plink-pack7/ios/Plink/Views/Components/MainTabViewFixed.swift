@@ -1,9 +1,8 @@
 import SwiftUI
 
-// MARK: - MainTabView (Pack 7: Settings как отдельная вкладка)
-// Баг: Settings открывались выдвижным окном
-// Фикс: Settings — отдельная 5-я вкладка в таббаре
-// + исправлены двойные нажатия (через @State вместо @EnvironmentObject)
+// MARK: - MainTabView (Pack 7.1: ИИ по центру)
+// Изменение: ИИ перемещён на 3-ю позицию (в центр таббара)
+// Порядок: Главная → Комнаты → ИИ → Друзья → Настройки
 
 @MainActor
 final class TabRouter: ObservableObject {
@@ -12,8 +11,8 @@ final class TabRouter: ObservableObject {
     enum Tab: Int, CaseIterable, Identifiable {
         case home = 0
         case rooms = 1
-        case friends = 2
-        case ai = 3
+        case ai = 2          // ← Pack 7.1: ИИ по центру
+        case friends = 3
         case settings = 4
         
         var id: Int { rawValue }
@@ -22,8 +21,8 @@ final class TabRouter: ObservableObject {
             switch self {
             case .home: return "Главная"
             case .rooms: return "Комнаты"
-            case .friends: return "Друзья"
             case .ai: return "ИИ"
+            case .friends: return "Друзья"
             case .settings: return "Настройки"
             }
         }
@@ -32,19 +31,18 @@ final class TabRouter: ObservableObject {
             switch self {
             case .home: return "house.fill"
             case .rooms: return "tv.fill"
-            case .friends: return "person.2.fill"
             case .ai: return "sparkles"
+            case .friends: return "person.2.fill"
             case .settings: return "gearshape.fill"
             }
         }
         
-        // Pack 7: каждый таб — свой цвет
         var color: Color {
             switch self {
             case .home: return .plinkPrimary
             case .rooms: return .plinkRooms
-            case .friends: return .plinkFriends
             case .ai: return .plinkAI
+            case .friends: return .plinkFriends
             case .settings: return .plinkSettings
             }
         }
@@ -87,19 +85,19 @@ struct MainTabViewFixed: View {
                 }
                 .tag(TabRouter.Tab.rooms)
             
-            FriendsViewFixed()
-                .tabItem {
-                    Label(TabRouter.Tab.friends.title, systemImage: TabRouter.Tab.friends.icon)
-                }
-                .tag(TabRouter.Tab.friends)
-            
+            // Pack 7.1: ИИ по центру (3-я позиция)
             AIAssistantView()
                 .tabItem {
                     Label(TabRouter.Tab.ai.title, systemImage: TabRouter.Tab.ai.icon)
                 }
                 .tag(TabRouter.Tab.ai)
             
-            // Pack 7: Settings — отдельная вкладка
+            FriendsViewFixed()
+                .tabItem {
+                    Label(TabRouter.Tab.friends.title, systemImage: TabRouter.Tab.friends.icon)
+                }
+                .tag(TabRouter.Tab.friends)
+            
             SettingsViewFixed()
                 .tabItem {
                     Label(TabRouter.Tab.settings.title, systemImage: TabRouter.Tab.settings.icon)
@@ -107,10 +105,7 @@ struct MainTabViewFixed: View {
                 .tag(TabRouter.Tab.settings)
         }
         .tint(.plinkPrimary)
-        // Pack 7: каждый таб подсвечивается своим цветом
-        .onChange(of: router.selectedTab) { _, newTab in
-            // Можно динамически менять tint, но SwiftUI использует tint для всех сразу
-            // Поэтому используем .tint(.plinkPrimary) — фиолетовый, brand color
+        .onChange(of: router.selectedTab) { _, _ in
             HapticManager.shared.selectionChanged()
         }
     }
