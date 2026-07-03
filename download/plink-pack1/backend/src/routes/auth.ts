@@ -1,4 +1,4 @@
-// src/routes/auth.ts — обновлённый с refresh tokens
+// src/routes/auth.ts — Pack 1.1: правильные rate limits
 import bcrypt from 'bcrypt';
 import { prisma } from '../config/db.js';
 import { issueTokenPair, verifyRefreshToken, revokeAllUserTokens } from '../utils/tokens.js';
@@ -7,10 +7,10 @@ import { alertWarning } from '../utils/alerting.js';
 
 export default async function authRoutes(fastify) {
 
-  // POST /api/auth/signup
+  // POST /api/auth/signup — 5 регистраций за 20 минут
   fastify.post('/auth/signup', {
     config: {
-      rateLimit: { max: 3, timeWindow: '1 hour' }
+      rateLimit: { max: 5, timeWindow: '20 minutes' }
     }
   }, async (request, reply) => {
     const { email, password, username } = request.body;
@@ -49,10 +49,10 @@ export default async function authRoutes(fastify) {
     });
   });
 
-  // POST /api/auth/signin
+  // POST /api/auth/signin — 10 попыток входа за 5 минут
   fastify.post('/auth/signin', {
     config: {
-      rateLimit: { max: 5, timeWindow: '1 minute' }
+      rateLimit: { max: 10, timeWindow: '5 minutes' }
     }
   }, async (request, reply) => {
     const { email, password } = request.body;
@@ -92,10 +92,10 @@ export default async function authRoutes(fastify) {
     });
   });
 
-  // POST /api/auth/refresh — обновить access token
+  // POST /api/auth/refresh — 60 в минуту (часто, т.к. каждый запуск приложения)
   fastify.post('/auth/refresh', {
     config: {
-      rateLimit: { max: 30, timeWindow: '1 minute' }
+      rateLimit: { max: 60, timeWindow: '1 minute' }
     }
   }, async (request, reply) => {
     const { refreshToken } = request.body;
@@ -118,7 +118,6 @@ export default async function authRoutes(fastify) {
       return reply.status(403).send({ error: 'Account banned' });
     }
 
-    // Issue new pair (rotation)
     const tokens = await issueTokenPair(fastify, user.id);
     
     await logAudit({
@@ -135,7 +134,7 @@ export default async function authRoutes(fastify) {
     });
   });
 
-  // POST /api/auth/logout — отозвать все refresh tokens
+  // POST /api/auth/logout
   fastify.post('/auth/logout', {
     preHandler: [fastify.authenticate]
   }, async (request, reply) => {

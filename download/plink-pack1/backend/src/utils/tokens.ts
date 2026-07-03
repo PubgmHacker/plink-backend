@@ -1,4 +1,4 @@
-// src/utils/tokens.ts — JWT token generation with refresh tokens
+// src/utils/tokens.ts — Pack 1.1: настраиваемый TTL через env
 import bcrypt from 'bcrypt';
 import crypto from 'crypto';
 import { prisma } from '../config/db.js';
@@ -12,13 +12,13 @@ export interface TokenPair {
 }
 
 export async function issueTokenPair(fastify: any, userId: string): Promise<TokenPair> {
-  // Short-lived access token (15 min)
+  // Access token (по умолчанию 7 дней — не выкидывает из фильма)
   const accessToken = fastify.jwt.sign(
     { id: userId },
-    { expiresIn: config.ACCESS_TOKEN_TTL }
+    { expiresIn: config.ACCESS_TOKEN_TTL as any }
   );
   
-  // Long-lived refresh token (30 days, stored hashed in DB)
+  // Refresh token (по умолчанию 90 дней)
   const refreshPayload = crypto.randomBytes(48).toString('hex');
   const refreshHash = await bcrypt.hash(refreshPayload, 10);
   const refreshExpiresAt = new Date(
@@ -35,12 +35,29 @@ export async function issueTokenPair(fastify: any, userId: string): Promise<Toke
   
   const refreshToken = `${userId}.${refreshPayload}`;
   
+  // Вычисляем accessExpiresAt из TTL строки ('7d' → 7 * 24 * 3600 * 1000)
+  const accessExpiresAt = parseTtlToMs(config.ACCESS_TOKEN_TTL);
+  
   return {
     accessToken,
     refreshToken,
-    accessExpiresAt: Date.now() + 15 * 60 * 1000,
+    accessExpiresAt: Date.now() + accessExpiresAt,
     refreshExpiresAt: refreshExpiresAt.getTime(),
   };
+}
+
+function parseTtlToMs(ttl: string): number {
+  const match = ttl.match(/^(\d+)([smhd])$/);
+  if (!match) return 7 * 24 * 3600 * 1000; // default 7 days
+  const num = parseInt(match[1]);
+  const unit = match[2];
+  switch (unit) {
+    case 's': return num * 1000;
+    case 'm': return num * 60 * 1000;
+    case 'h': return num * 3600 * 1000;
+    case 'd': return num * 24 * 3600 * 1000;
+    default: return 7 * 24 * 3600 * 1000;
+  }
 }
 
 export async function verifyRefreshToken(fastify: any, refreshToken: string) {

@@ -1,4 +1,4 @@
-// src/config/index.ts — обновлённая конфигурация с Redis и Sentry
+// src/config/index.ts — Pack 1.1: увеличенные TTL
 function required(key: string): string {
   const val = process.env[key];
   if (!val) throw new Error(`Missing env: ${key}`);
@@ -16,8 +16,11 @@ export const config = {
   SENTRY_DSN: process.env.SENTRY_DSN || '',
   SLACK_WEBHOOK_URL: process.env.SLACK_WEBHOOK_URL || '',
   
-  ACCESS_TOKEN_TTL: '15m',
-  REFRESH_TOKEN_TTL_DAYS: 30,
+  // 🔧 Pack 1.1: Увеличенные TTL для удобства пользователей
+  // Access token = 7 дней (не выкидывает из 6-часового фильма)
+  // Refresh token = 90 дней (редко просит пароль)
+  ACCESS_TOKEN_TTL: process.env.ACCESS_TOKEN_TTL || '7d',
+  REFRESH_TOKEN_TTL_DAYS: parseInt(process.env.REFRESH_TOKEN_TTL_DAYS || '90'),
   
   NODE_ENV: process.env.NODE_ENV || 'development',
   isProduction: process.env.NODE_ENV === 'production',
