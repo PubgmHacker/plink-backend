@@ -44,7 +44,6 @@ model User {
   blockedUsers     UserBlock[]       @relation("Blocker")
   blockedBy        UserBlock[]       @relation("Blocked")
   reports          Report[]          @relation("Reporter")
-  reportedRooms    Report[]          @relation("ReportedRoom")
 }
 
 model Room {
@@ -66,7 +65,7 @@ model Room {
   messages       ChatMessage[]
   playbackStates PlaybackState[]
   watchHistory   WatchHistory[]
-  reports        Report[]
+  reports        Report[]          @relation("ReportedRoom")
 }
 
 model RoomParticipant {
