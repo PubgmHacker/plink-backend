@@ -1,0 +1,248 @@
+📱 AppDelegate supportedInterfaceOrientationsFor → UIInterfaceOrientationMask(rawValue: 30)
+📱 AppDelegate supportedInterfaceOrientationsFor → UIInterfaceOrientationMask(rawValue: 30)
+📱 AppDelegate supportedInterfaceOrientationsFor → UIInterfaceOrientationMask(rawValue: 30)
+📱 AppDelegate supportedInterfaceOrientationsFor → UIInterfaceOrientationMask(rawValue: 30)
+📱 AppDelegate supportedInterfaceOrientationsFor → UIInterfaceOrientationMask(rawValue: 30)
+📱 AppDelegate supportedInterfaceOrientationsFor → UIInterfaceOrientationMask(rawValue: 30)
+📱 AppDelegate supportedInterfaceOrientationsFor → UIInterfaceOrientationMask(rawValue: 30)
+📱 AppDelegate supportedInterfaceOrientationsFor → UIInterfaceOrientationMask(rawValue: 30)
+📱 AppDelegate supportedInterfaceOrientationsFor → UIInterfaceOrientationMask(rawValue: 30)
+📱 AppDelegate supportedInterfaceOrientationsFor → UIInterfaceOrientationMask(rawValue: 30)
+📱 AppDelegate supportedInterfaceOrientationsFor → UIInterfaceOrientationMask(rawValue: 30)
+📱 AppDelegate supportedInterfaceOrientationsFor → UIInterfaceOrientationMask(rawValue: 30)
+📱 AppDelegate supportedInterfaceOrientationsFor → UIInterfaceOrientationMask(rawValue: 30)
+📱 AppDelegate supportedInterfaceOrientationsFor → UIInterfaceOrientationMask(rawValue: 30)
+📱 AppDelegate supportedInterfaceOrientationsFor → UIInterfaceOrientationMask(rawValue: 30)
+📱 AppDelegate supportedInterfaceOrientationsFor → UIInterfaceOrientationMask(rawValue: 30)
+📱 AppDelegate supportedInterfaceOrientationsFor → UIInterfaceOrientationMask(rawValue: 30)
+📱 AppDelegate supportedInterfaceOrientationsFor → UIInterfaceOrientationMask(rawValue: 30)
+📱 AppDelegate supportedInterfaceOrientationsFor → UIInterfaceOrientationMask(rawValue: 30)
+📱 AppDelegate supportedInterfaceOrientationsFor → UIInterfaceOrientationMask(rawValue: 30)
+📱 AppDelegate supportedInterfaceOrientationsFor → UIInterfaceOrientationMask(rawValue: 30)
+📱 AppDelegate supportedInterfaceOrientationsFor → UIInterfaceOrientationMask(rawValue: 30)
+nw_connection_copy_protocol_metadata_internal_block_invoke [C4] Client called nw_connection_copy_protocol_metadata_internal on unconnected nw_connection
+nw_connection_copy_protocol_metadata_internal_block_invoke [C4] Client called nw_connection_copy_protocol_metadata_internal on unconnected nw_connection
+nw_connection_copy_protocol_metadata_internal_block_invoke [C4] Client called nw_connection_copy_protocol_metadata_internal on unconnected nw_connection
+nw_connection_copy_connected_local_endpoint_block_invoke [C4] Client called nw_connection_copy_connected_local_endpoint on unconnected nw_connection
+nw_connection_copy_connected_remote_endpoint_block_invoke [C4] Client called nw_connection_copy_connected_remote_endpoint on unconnected nw_connection
+nw_connection_copy_protocol_metadata_internal_block_invoke [C5] Client called nw_connection_copy_protocol_metadata_internal on unconnected nw_connection
+nw_connection_copy_protocol_metadata_internal_block_invoke [C5] Client called nw_connection_copy_protocol_metadata_internal on unconnected nw_connection
+nw_connection_copy_protocol_metadata_internal_block_invoke [C5] Client called nw_connection_copy_protocol_metadata_internal on unconnected nw_connection
+nw_connection_copy_connected_local_endpoint_block_invoke [C5] Client called nw_connection_copy_connected_local_endpoint on unconnected nw_connection
+nw_connection_copy_connected_remote_endpoint_block_invoke [C5] Client called nw_connection_copy_connected_remote_endpoint on unconnected nw_connection
+🔍 RoomCreationView.onContentSelected: creating config with contentURL='https://www.youtube.com/watch?v=hQUVIT8m-c0', thumbnailURL='https://i.ytimg.com/vi/hQUVIT8m-c0/mqdefault.jpg'
+📱 AppDelegate supportedInterfaceOrientationsFor → UIInterfaceOrientationMask(rawValue: 30)
+📱 AppDelegate supportedInterfaceOrientationsFor → UIInterfaceOrientationMask(rawValue: 30)
+📱 AppDelegate supportedInterfaceOrientationsFor → UIInterfaceOrientationMask(rawValue: 30)
+📱 AppDelegate supportedInterfaceOrientationsFor → UIInterfaceOrientationMask(rawValue: 30)
+📱 AppDelegate supportedInterfaceOrientationsFor → UIInterfaceOrientationMask(rawValue: 30)
+📱 AppDelegate supportedInterfaceOrientationsFor → UIInterfaceOrientationMask(rawValue: 30)
+📱 AppDelegate supportedInterfaceOrientationsFor → UIInterfaceOrientationMask(rawValue: 30)
+📱 AppDelegate supportedInterfaceOrientationsFor → UIInterfaceOrientationMask(rawValue: 30)
+📱 AppDelegate supportedInterfaceOrientationsFor → UIInterfaceOrientationMask(rawValue: 30)
+🔍 RoomSetupView.createRoom: contentURL='https://www.youtube.com/watch?v=hQUVIT8m-c0', contentTitle='Stray Kids "THIS & THAT" Trailer', service=youtube
+🔧 RoomSetupView v44: calling MediaService.extract for videoId='hQUVIT8m-c0'
+⚠️ RoomSetupView v44: extraction failed (Server error (500): Extract failed: Command failed: yt-dlp --dump-single-json --no-warnings --no-call-home --no-check-certificate --prefer-free-formats --no-playlist --user-agent "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15" 'https://www.youtube.com/watch?v=hQUVIT8m-c0'
+ERROR: [youtube] hQUVIT8m-c0: Requested format is not available. Use --list-formats for a list of available formats
+), falling back to embed URL + WebView mode
+🔧 RoomSetupView v44: fallback embed URL='https://www.youtube.com/embed/hQUVIT8m-c0?playsinline=1&rel=0'
+🖼️ RoomSetupView v33: thumbnailURL = https://i.ytimg.com/vi/hQUVIT8m-c0/mqdefault.jpg
+🔍 RoomSetupView.createRoom: mediaItem.streamURL='https://www.youtube.com/embed/hQUVIT8m-c0?playsinline=1&rel=0', source=youtube
+📱 AppDelegate supportedInterfaceOrientationsFor → UIInterfaceOrientationMask(rawValue: 30)
+📱 AppDelegate supportedInterfaceOrientationsFor → UIInterfaceOrientationMask(rawValue: 30)
+📱 AppDelegate supportedInterfaceOrientationsFor → UIInterfaceOrientationMask(rawValue: 30)
+📱 AppDelegate supportedInterfaceOrientationsFor → UIInterfaceOrientationMask(rawValue: 30)
+📱 AppDelegate supportedInterfaceOrientationsFor → UIInterfaceOrientationMask(rawValue: 30)
+Plink.ReactionSKView implements focusItemsInRect: - caching for linear focus movement is limited as long as this view is on screen.
+[WS] ℹ️ Connecting to /ws/room/7beae09b-4b5f-43e0-b45b-4b893e8df6a3…
+📱 AppDelegate supportedInterfaceOrientationsFor → UIInterfaceOrientationMask(rawValue: 30)
+[WS] ℹ️ Connecting to /ws/room/7beae09b-4b5f-43e0-b45b-4b893e8df6a3…
+[WS] ❌ Receive error: отменено
+[WS] ❌ Disconnected: отменено
+[WS] ℹ️ Reconnecting in 1.0s (attempt #1)
+📱 AppDelegate supportedInterfaceOrientationsFor → UIInterfaceOrientationMask(rawValue: 30)
+📱 AppDelegate supportedInterfaceOrientationsFor → UIInterfaceOrientationMask(rawValue: 30)
+[WS] ℹ️ ✅ Connected (RTT estimate: 100ms)
+[WS] ℹ️ Connected → room 7beae09b-4b5f-43e0-b45b-4b893e8df6a3
+[WS] ℹ️ 🔍 room.mediaItem exists: true, streamURL: https://www.youtube.com/embed/hQUVIT8m-c0?playsinline=1&rel=0, source: youtube
+[WS] ℹ️ 🔍 syncEngine.currentMediaItem == nil: true
+[WS] ℹ️ 🔍 Calling syncEngine.loadMedia...
+[SYNC] ℹ️ 🔍 loadMedia: webview mode, skipping AVPlayer. errorMessage cleared.
+[WS] ℹ️ 🔍 After loadMedia, currentMediaItem == nil: false
+[WS] ℹ️ Restoring room session: 7beae09b-4b5f-43e0-b45b-4b893e8df6a3
+🔧🔧🔧 makeUIView CALLED — WebViewControl.shared.webView exists: false
+📺 YouTube v29: makeUIView → Coordinator.loadVideoOnce, videoId='hQUVIT8m-c0', url='https://www.youtube.com/embed/hQUVIT8m-c0?playsinline=1&rel=0'
+📺 YouTube v39: loading m.youtube.com/watch?v=hQUVIT8m-c0
+🎬 v38: VideoSectionContent — rendering VideoContainerView for streamURL=https://www.youtube.com/embed/hQUVIT8m-c0?playsinline=1&rel=0
+Updated list with error: DownloadFailed
+Updated list with error: DownloadFailed
+Updated list with error: DownloadFailed
+[WS] ℹ️ Сессия восстановлена — ресинхронизация
+[WS] ℹ️ Connecting to /ws/room/7beae09b-4b5f-43e0-b45b-4b893e8df6a3…
+GPU process (0x1380c41e0) took 1.517828 seconds to launch
+WebContent process (0x1380780c0) took 1.533754 seconds to launch
+Networking process (0x1380fc100) took 1.655779 seconds to launch
+WebContent[2997] Unable to hide query parameters from script (missing data)
+📺 YouTube v34.30: early CSS injection at didCommit (embed mode)
+Updated list with error: DownloadFailed
+Updated list with error: DownloadFailed
+🚫 YouTube v34.11: blocked redirect to accounts.google.com (bot check)
+Updated list with error: DownloadFailed
+📺 YouTube v32.1: page loaded (m.youtube.com), injecting CSS + JS bridge
+🎉 YouTube v32: video element ready — player initialized, duration=183.941s
+📏 SyncEngine v32.19: duration = 183.941s
+🔄 YouTube v32: state=1, currentTime=1.0925550403298043s
+🔄 YouTube v32: state=1, currentTime=1.5929812066599995s
+🔄 YouTube v32: state=1, currentTime=2.0943185770029364s
+🔄 YouTube v32: state=1, currentTime=2.5950019709943244s
+🔄 YouTube v32: state=1, currentTime=3.107237777663749s
+📱 AppDelegate supportedInterfaceOrientationsFor → UIInterfaceOrientationMask(rawValue: 30)
+📱 AppDelegate supportedInterfaceOrientationsFor → UIInterfaceOrientationMask(rawValue: 30)
+📱 AppDelegate supportedInterfaceOrientationsFor → UIInterfaceOrientationMask(rawValue: 30)
+📱 AppDelegate supportedInterfaceOrientationsFor → UIInterfaceOrientationMask(rawValue: 30)
+🔄 YouTube v32: state=1, currentTime=3.609351914991991s
+📱📱📱 enterFullscreen START — isFullscreenMode was: false
+📱📱📱 enterFullscreen — calling lockToLandscape, isFullscreenMode now: true
+🔒 ORIENTATION LOCK: UIInterfaceOrientationMask(rawValue: 24) at 2   Plink.debug.dylib                   0x0000000107eb2b7c $s5Plink18OrientationManagerC15lockToLandscapeyyF + 44 ← 3   Plink.debug.dylib                   0x0000000108049d24 $s5Plink8RoomViewV15enterFullscreen33_45415C85CCEF1707B63B27CCC8E44C36LLyyF + 1104 ← 4   Plink.debug.dylib                   0x000000010804971c $s5Plink8RoomViewV12videoSection33_45415C85CCEF1707B63B27CCC8E44C36LL9viewModel0D5Width0D6Height12isFullscreenQrAA0bcN0C_12CoreGraphics7CGFloatVANSbtF7SwiftUI05TupleC0VyAO0C0PAOE2idyQrqd__SHRd__lFQOyAA05VideoE7ContentAELLV_SiQo__AsOE16allowsHitTestingyQrSbFQOyAO6VStackVyAQyAsOE7paddingyQrAO4EdgeO3SetV_ANSgtFQOyAsOEA_yQrA3__A4_tFQOyAO6HStackVyAQyAO6ButtonVyAsOE9clipShape_5styleQrqd___AO9FillStyleVtAO5ShapeRd__lFQOyAsOE10background_20ignoresSafeAreaEdgesQrqd___A3_tAO10ShapeStyleRd__lFQOyAsOE5frame5width6height9alignmentQrA4__A4_AO9AlignmentVtFQOyAsOE15foregroundColoryQrAO5ColorVSgFQOyAsOE4fontyQrAO4FontVSgFQOyAO5ImageV_Qo__Qo__Qo__AO8MaterialVQo__AO6CircleVQo_G_AO6SpacerVA42_AA16ParticipantBadgeVtGG_Qo__Qo__A44_tGG_Qo_AsOE6zIndexyQrSdFQOyAsOE10transitionyQrqd__AO10TransitionRd__lFQOyAO6ZStackVyAQyAsOE15ignoresSafeArea_5edgesQrAO15SafeAreaRegionsV_A3_tFQOyA25__Qo__AZyAQyA34__AO4TextVA6_yAQyA8_yAsOEA9__A10_Qrqd___A12_tAOA13_Rd__lFQOyAsOEA14__A15_Qrqd___A3_tAOA16_Rd__lFQOyAsOEA17_A18_A19_A20_QrA4__A4_A22_tFQOyAsOEA23_yQrA26_FQOyAZyAQyA33__A65_tGG_Qo__Qo__A37_Qo__AO16RoundedRectangleVQo_G_A74_tGGtGGtGG_AO17OpacityTransitionVQo__Qo_SgtGyXEfU_A51_yXEfU0_A47_yXEfU_yyScMYccfU1_ + 88 ← 5   SwiftUI                             0x00000001974391e0 B78443E4-291F-3FFD-931B-DE278E9EC5B8 + 9773536 ← 6   SwiftUI                             0x000000019735ad44 B78443E4-291F-3FFD-931B-DE278E9EC5B8 + 8863044 ← 7   SwiftUI                             0x0000000197a0e3c0 B78443E4-291F-3FFD-931B-DE278E9EC5B8 + 15889344 ← 8   SwiftUI                             0x00000001979e23fc B78443E4-291F-3FFD-931B-DE278E9EC5B8 + 15709180 ← 9   SwiftUI                             0x0000000196f25f18 B78443E4-291F-3FFD-931B-DE278E9EC5B8 + 4452120
+📱 AppDelegate supportedInterfaceOrientationsFor → UIInterfaceOrientationMask(rawValue: 24)
+📱 AppDelegate supportedInterfaceOrientationsFor → UIInterfaceOrientationMask(rawValue: 24)
+🔄 FORCE LANDSCAPE at 2   Plink.debug.dylib                   0x0000000107eb2b84 $s5Plink18OrientationManagerC15lockToLandscapeyyF + 52 ← 3   Plink.debug.dylib                   0x0000000108049d24 $s5Plink8RoomViewV15enterFullscreen33_45415C85CCEF1707B63B27CCC8E44C36LLyyF + 1104 ← 4   Plink.debug.dylib                   0x000000010804971c $s5Plink8RoomViewV12videoSection33_45415C85CCEF1707B63B27CCC8E44C36LL9viewModel0D5Width0D6Height12isFullscreenQrAA0bcN0C_12CoreGraphics7CGFloatVANSbtF7SwiftUI05TupleC0VyAO0C0PAOE2idyQrqd__SHRd__lFQOyAA05VideoE7ContentAELLV_SiQo__AsOE16allowsHitTestingyQrSbFQOyAO6VStackVyAQyAsOE7paddingyQrAO4EdgeO3SetV_ANSgtFQOyAsOEA_yQrA3__A4_tFQOyAO6HStackVyAQyAO6ButtonVyAsOE9clipShape_5styleQrqd___AO9FillStyleVtAO5ShapeRd__lFQOyAsOE10background_20ignoresSafeAreaEdgesQrqd___A3_tAO10ShapeStyleRd__lFQOyAsOE5frame5width6height9alignmentQrA4__A4_AO9AlignmentVtFQOyAsOE15foregroundColoryQrAO5ColorVSgFQOyAsOE4fontyQrAO4FontVSgFQOyAO5ImageV_Qo__Qo__Qo__AO8MaterialVQo__AO6CircleVQo_G_AO6SpacerVA42_AA16ParticipantBadgeVtGG_Qo__Qo__A44_tGG_Qo_AsOE6zIndexyQrSdFQOyAsOE10transitionyQrqd__AO10TransitionRd__lFQOyAO6ZStackVyAQyAsOE15ignoresSafeArea_5edgesQrAO15SafeAreaRegionsV_A3_tFQOyA25__Qo__AZyAQyA34__AO4TextVA6_yAQyA8_yAsOEA9__A10_Qrqd___A12_tAOA13_Rd__lFQOyAsOEA14__A15_Qrqd___A3_tAOA16_Rd__lFQOyAsOEA17_A18_A19_A20_QrA4__A4_A22_tFQOyAsOEA23_yQrA26_FQOyAZyAQyA33__A65_tGG_Qo__Qo__A37_Qo__AO16RoundedRectangleVQo_G_A74_tGGtGGtGG_AO17OpacityTransitionVQo__Qo_SgtGyXEfU_A51_yXEfU0_A47_yXEfU_yyScMYccfU1_ + 88 ← 5   SwiftUI                             0x00000001974391e0 B78443E4-291F-3FFD-931B-DE278E9EC5B8 + 9773536 ← 6   SwiftUI                             0x000000019735ad44 B78443E4-291F-3FFD-931B-DE278E9EC5B8 + 8863044 ← 7   SwiftUI                             0x0000000197a0e3c0 B78443E4-291F-3FFD-931B-DE278E9EC5B8 + 15889344 ← 8   SwiftUI                             0x00000001979e23fc B78443E4-291F-3FFD-931B-DE278E9EC5B8 + 15709180 ← 9   SwiftUI                             0x0000000196f25f18 B78443E4-291F-3FFD-931B-DE278E9EC5B8 + 4452120
+📱 AppDelegate supportedInterfaceOrientationsFor → UIInterfaceOrientationMask(rawValue: 24)
+📱 AppDelegate supportedInterfaceOrientationsFor → UIInterfaceOrientationMask(rawValue: 24)
+🔄 v41: prepareForFullReload — saved position 4.065541109990605s, will recreate WKWebView on next makeUIView
+📱 AppDelegate supportedInterfaceOrientationsFor → UIInterfaceOrientationMask(rawValue: 24)
+📱 AppDelegate supportedInterfaceOrientationsFor → UIInterfaceOrientationMask(rawValue: 24)
+Plink.ReactionSKView implements focusItemsInRect: - caching for linear focus movement is limited as long as this view is on screen.
+[WS] ℹ️ Connecting to /ws/room/7beae09b-4b5f-43e0-b45b-4b893e8df6a3…
+📱 AppDelegate supportedInterfaceOrientationsFor → UIInterfaceOrientationMask(rawValue: 24)
+📱 AppDelegate supportedInterfaceOrientationsFor → UIInterfaceOrientationMask(rawValue: 24)
+fence tx observer 152b3 timed out after 0.600000
+Tracking element window has a non-placeholder input view: (null)
+Tracking element window has a non-placeholder input view: (null)
+Tracking element window has a non-placeholder input view: (null)
+Tracking element window has a non-placeholder input view: (null)
+Tracking element window has a non-placeholder input view: (null)
+🔄 YouTube v32: state=1, currentTime=4.114316645337536s
+🔄 YouTube v32: state=1, currentTime=4.671330455991802s
+[WS] ℹ️ Connecting to /ws/room/7beae09b-4b5f-43e0-b45b-4b893e8df6a3…
+[WS] ❌ Receive error: Не удалось завершить операцию. Сокет не подключен
+[WS] ❌ Disconnected: Не удалось завершить операцию. Сокет не подключен
+[WS] ℹ️ Reconnecting in 0.8s (attempt #1)
+[WS] ❌ Receive error: Не удалось завершить операцию. Сокет не подключен
+[WS] ❌ Receive error: отменено
+[WS] ℹ️ Connecting to /ws/room/7beae09b-4b5f-43e0-b45b-4b893e8df6a3…
+tcp_input [C10.1.1:3] flags=[R.] seq=31500, ack=483662672, win=5840 state=FIN_WAIT_1 rcv_nxt=31500, snd_una=483662647
+[WS] ℹ️ Flushing 2 queued message(s)
+[WS] ℹ️ ✅ Connected (RTT estimate: 100ms)
+[WS] ℹ️ Connected → room 7beae09b-4b5f-43e0-b45b-4b893e8df6a3
+[WS] ℹ️ 🔍 room.mediaItem exists: true, streamURL: https://www.youtube.com/embed/hQUVIT8m-c0?playsinline=1&rel=0, source: youtube
+[WS] ℹ️ 🔍 syncEngine.currentMediaItem == nil: true
+[WS] ℹ️ 🔍 SKIP loadMedia — WebView already has video loaded (v34.16)
+[WS] ℹ️ Restoring room session: 7beae09b-4b5f-43e0-b45b-4b893e8df6a3
+[WS] ℹ️ Сессия восстановлена — ресинхронизация
+WebContent[2997] AudioSession::beginInterruption but session is already interrupted!
+🔧🔧🔧 makeUIView CALLED — WebViewControl.shared.webView exists: true
+💥 v41: makeUIView — needsFullReload=true, destroying old WKWebView
+💥 v41: destroyExistingWebView — removing from superview, releasing WKWebView
+📺 YouTube v43: full reload — will restore position 4.065541109990605s via JS global
+📺 YouTube v39: loading m.youtube.com/watch?v=hQUVIT8m-c0
+🎬 v38: VideoSectionContent — rendering VideoContainerView for streamURL=https://www.youtube.com/embed/hQUVIT8m-c0?playsinline=1&rel=0
+📺 YouTube v34.30: early CSS injection at didCommit (embed mode)
+📺 YouTube v43: injected _plinkRestorePosition = 4.065541109990605s at didCommit
+[WS] ❌ Receive error: Не удалось завершить операцию. Сокет не подключен
+[WS] ❌ Disconnected: Не удалось завершить операцию. Сокет не подключен
+[WS] ℹ️ Reconnecting in 0.9s (attempt #1)
+[WS] ❌ Receive error: Не удалось завершить операцию. Сокет не подключен
+🚫 YouTube v34.11: blocked redirect to accounts.google.com (bot check)
+[WS] ℹ️ Connecting to /ws/room/7beae09b-4b5f-43e0-b45b-4b893e8df6a3…
+[WS] ℹ️ Flushing 1 queued message(s)
+[WS] ℹ️ ✅ Connected (RTT estimate: 100ms)
+[WS] ℹ️ Connected → room 7beae09b-4b5f-43e0-b45b-4b893e8df6a3
+[WS] ℹ️ 🔍 room.mediaItem exists: true, streamURL: https://www.youtube.com/embed/hQUVIT8m-c0?playsinline=1&rel=0, source: youtube
+[WS] ℹ️ 🔍 syncEngine.currentMediaItem == nil: false
+[WS] ⚠️ 🔍 SKIP loadMedia: mediaItem=true, currentMediaItem nil=false
+[WS] ℹ️ Restoring room session: 7beae09b-4b5f-43e0-b45b-4b893e8df6a3
+[WS] ℹ️ Сессия восстановлена — ресинхронизация
+📺 YouTube v32.1: page loaded (m.youtube.com), injecting CSS + JS bridge
+🎉 YouTube v32: video element ready — player initialized, duration=183.941s
+📏 SyncEngine v32.19: duration = 183.941s
+WebContent[2997] AudioSession::beginInterruption but session is already interrupted!
+🔄 YouTube v32: state=1, currentTime=4.065541109990605s
+WebContent[2997] AudioSession::beginInterruption but session is already interrupted!
+WebContent[2997] AudioSession::beginInterruption but session is already interrupted!
+WebContent[2997] AudioSession::beginInterruption but session is already interrupted!
+Error acquiring assertion: <Error Domain=RBSServiceErrorDomain Code=1 "((target is not running or doesn't have entitlement com.apple.developer.web-browser-engine.rendering AND target is not running or doesn't have entitlement com.apple.developer.web-browser-engine.networking AND target is not running or doesn't have entitlement com.apple.developer.web-browser-engine.webcontent))" UserInfo={NSLocalizedFailureReason=((target is not running or doesn't have entitlement com.apple.developer.web-browser-engine.rendering AND target is not running or doesn't have entitlement com.apple.developer.web-browser-engine.networking AND target is not running or doesn't have entitlement com.apple.developer.web-browser-engine.webcontent))}>
+0x138104480 - ProcessAssertion::acquireSync Failed to acquire RBS assertion 'XPCConnectionTerminationWatchdog' for process with PID=2997, error: (null)
+Failed to terminate process: Error Domain=com.apple.extensionKit.errorDomain Code=18 "(null)" UserInfo={NSUnderlyingError=0x11d41a850 {Error Domain=RBSRequestErrorDomain Code=4 "Target process has a higher termination resistance than the termination context" UserInfo={NSLocalizedFailureReason=Target process has a higher termination resistance than the termination context}}}
+Error acquiring assertion: <Error Domain=RBSServiceErrorDomain Code=1 "((target is not running or doesn't have entitlement com.apple.developer.web-browser-engine.rendering AND target is not running or doesn't have entitlement com.apple.developer.web-browser-engine.networking AND target is not running or doesn't have entitlement com.apple.developer.web-browser-engine.webcontent))" UserInfo={NSLocalizedFailureReason=((target is not running or doesn't have entitlement com.apple.developer.web-browser-engine.rendering AND target is not running or doesn't have entitlement com.apple.developer.web-browser-engine.networking AND target is not running or doesn't have entitlement com.apple.developer.web-browser-engine.webcontent))}>
+Failed to terminate process: Error Domain=com.apple.extensionKit.errorDomain Code=18 "(null)" UserInfo={NSUnderlyingError=0x11d41a460 {Error Domain=RBSRequestErrorDomain Code=4 "Target process has a higher termination resistance than the termination context" UserInfo={NSLocalizedFailureReason=Target process has a higher termination resistance than the termination context}}}
+0x138104540 - ProcessAssertion::acquireSync Failed to acquire RBS assertion 'WebProcess NearSuspended Assertion' for process with PID=2997, error: (null)
+🔄 YouTube v32: state=1, currentTime=4.63926083300213s
+🔄 YouTube v32: state=1, currentTime=5.142917922996241s
+🔄 YouTube v32: state=1, currentTime=5.644452446334841s
+🔄 YouTube v32: state=1, currentTime=6.168429163324012s
+🔄 YouTube v32: state=1, currentTime=6.6692559116629715s
+🔄 YouTube v32: state=1, currentTime=7.1703486819998234s
+🔄 YouTube v32: state=1, currentTime=7.672457856677481s
+📱 exitFullscreen: isFullscreenMode = false + rotating to portrait
+🔒 ORIENTATION LOCK: UIInterfaceOrientationMask(rawValue: 2) at 2   Plink.debug.dylib                   0x0000000107eb2b38 $s5Plink18OrientationManagerC14lockToPortraityyF + 44 ← 3   Plink.debug.dylib                   0x000000010804989c $s5Plink8RoomViewV14exitFullscreen33_45415C85CCEF1707B63B27CCC8E44C36LLyyF + 364 ← 4   Plink.debug.dylib                   0x0000000108049710 $s5Plink8RoomViewV12videoSection33_45415C85CCEF1707B63B27CCC8E44C36LL9viewModel0D5Width0D6Height12isFullscreenQrAA0bcN0C_12CoreGraphics7CGFloatVANSbtF7SwiftUI05TupleC0VyAO0C0PAOE2idyQrqd__SHRd__lFQOyAA05VideoE7ContentAELLV_SiQo__AsOE16allowsHitTestingyQrSbFQOyAO6VStackVyAQyAsOE7paddingyQrAO4EdgeO3SetV_ANSgtFQOyAsOEA_yQrA3__A4_tFQOyAO6HStackVyAQyAO6ButtonVyAsOE9clipShape_5styleQrqd___AO9FillStyleVtAO5ShapeRd__lFQOyAsOE10background_20ignoresSafeAreaEdgesQrqd___A3_tAO10ShapeStyleRd__lFQOyAsOE5frame5width6height9alignmentQrA4__A4_AO9AlignmentVtFQOyAsOE15foregroundColoryQrAO5ColorVSgFQOyAsOE4fontyQrAO4FontVSgFQOyAO5ImageV_Qo__Qo__Qo__AO8MaterialVQo__AO6CircleVQo_G_AO6SpacerVA42_AA16ParticipantBadgeVtGG_Qo__Qo__A44_tGG_Qo_AsOE6zIndexyQrSdFQOyAsOE10transitionyQrqd__AO10TransitionRd__lFQOyAO6ZStackVyAQyAsOE15ignoresSafeArea_5edgesQrAO15SafeAreaRegionsV_A3_tFQOyA25__Qo__AZyAQyA34__AO4TextVA6_yAQyA8_yAsOEA9__A10_Qrqd___A12_tAOA13_Rd__lFQOyAsOEA14__A15_Qrqd___A3_tAOA16_Rd__lFQOyAsOEA17_A18_A19_A20_QrA4__A4_A22_tFQOyAsOEA23_yQrA26_FQOyAZyAQyA33__A65_tGG_Qo__Qo__A37_Qo__AO16RoundedRectangleVQo_G_A74_tGGtGGtGG_AO17OpacityTransitionVQo__Qo_SgtGyXEfU_A51_yXEfU0_A47_yXEfU_yyScMYccfU1_ + 76 ← 5   SwiftUI                             0x00000001974391e0 B78443E4-291F-3FFD-931B-DE278E9EC5B8 + 9773536 ← 6   SwiftUI                             0x000000019735ad44 B78443E4-291F-3FFD-931B-DE278E9EC5B8 + 8863044 ← 7   SwiftUI                             0x0000000197a0e3c0 B78443E4-291F-3FFD-931B-DE278E9EC5B8 + 15889344 ← 8   SwiftUI                             0x00000001979e23fc B78443E4-291F-3FFD-931B-DE278E9EC5B8 + 15709180 ← 9   SwiftUI                             0x0000000196f25f18 B78443E4-291F-3FFD-931B-DE278E9EC5B8 + 4452120
+📱 AppDelegate supportedInterfaceOrientationsFor → UIInterfaceOrientationMask(rawValue: 2)
+📱 AppDelegate supportedInterfaceOrientationsFor → UIInterfaceOrientationMask(rawValue: 2)
+🔄 FORCE PORTRAIT at 2   Plink.debug.dylib                   0x0000000107eb2b40 $s5Plink18OrientationManagerC14lockToPortraityyF + 52 ← 3   Plink.debug.dylib                   0x000000010804989c $s5Plink8RoomViewV14exitFullscreen33_45415C85CCEF1707B63B27CCC8E44C36LLyyF + 364 ← 4   Plink.debug.dylib                   0x0000000108049710 $s5Plink8RoomViewV12videoSection33_45415C85CCEF1707B63B27CCC8E44C36LL9viewModel0D5Width0D6Height12isFullscreenQrAA0bcN0C_12CoreGraphics7CGFloatVANSbtF7SwiftUI05TupleC0VyAO0C0PAOE2idyQrqd__SHRd__lFQOyAA05VideoE7ContentAELLV_SiQo__AsOE16allowsHitTestingyQrSbFQOyAO6VStackVyAQyAsOE7paddingyQrAO4EdgeO3SetV_ANSgtFQOyAsOEA_yQrA3__A4_tFQOyAO6HStackVyAQyAO6ButtonVyAsOE9clipShape_5styleQrqd___AO9FillStyleVtAO5ShapeRd__lFQOyAsOE10background_20ignoresSafeAreaEdgesQrqd___A3_tAO10ShapeStyleRd__lFQOyAsOE5frame5width6height9alignmentQrA4__A4_AO9AlignmentVtFQOyAsOE15foregroundColoryQrAO5ColorVSgFQOyAsOE4fontyQrAO4FontVSgFQOyAO5ImageV_Qo__Qo__Qo__AO8MaterialVQo__AO6CircleVQo_G_AO6SpacerVA42_AA16ParticipantBadgeVtGG_Qo__Qo__A44_tGG_Qo_AsOE6zIndexyQrSdFQOyAsOE10transitionyQrqd__AO10TransitionRd__lFQOyAO6ZStackVyAQyAsOE15ignoresSafeArea_5edgesQrAO15SafeAreaRegionsV_A3_tFQOyA25__Qo__AZyAQyA34__AO4TextVA6_yAQyA8_yAsOEA9__A10_Qrqd___A12_tAOA13_Rd__lFQOyAsOEA14__A15_Qrqd___A3_tAOA16_Rd__lFQOyAsOEA17_A18_A19_A20_QrA4__A4_A22_tFQOyAsOEA23_yQrA26_FQOyAZyAQyA33__A65_tGG_Qo__Qo__A37_Qo__AO16RoundedRectangleVQo_G_A74_tGGtGGtGG_AO17OpacityTransitionVQo__Qo_SgtGyXEfU_A51_yXEfU0_A47_yXEfU_yyScMYccfU1_ + 76 ← 5   SwiftUI                             0x00000001974391e0 B78443E4-291F-3FFD-931B-DE278E9EC5B8 + 9773536 ← 6   SwiftUI                             0x000000019735ad44 B78443E4-291F-3FFD-931B-DE278E9EC5B8 + 8863044 ← 7   SwiftUI                             0x0000000197a0e3c0 B78443E4-291F-3FFD-931B-DE278E9EC5B8 + 15889344 ← 8   SwiftUI                             0x00000001979e23fc B78443E4-291F-3FFD-931B-DE278E9EC5B8 + 15709180 ← 9   SwiftUI                             0x0000000196f25f18 B78443E4-291F-3FFD-931B-DE278E9EC5B8 + 4452120
+📱 AppDelegate supportedInterfaceOrientationsFor → UIInterfaceOrientationMask(rawValue: 2)
+📱 AppDelegate supportedInterfaceOrientationsFor → UIInterfaceOrientationMask(rawValue: 2)
+🔄 v41: prepareForFullReload — saved position 8.1178940999896s, will recreate WKWebView on next makeUIView
+📱 AppDelegate supportedInterfaceOrientationsFor → UIInterfaceOrientationMask(rawValue: 2)
+📱 AppDelegate supportedInterfaceOrientationsFor → UIInterfaceOrientationMask(rawValue: 2)
+📱 AppDelegate supportedInterfaceOrientationsFor → UIInterfaceOrientationMask(rawValue: 2)
+📱 AppDelegate supportedInterfaceOrientationsFor → UIInterfaceOrientationMask(rawValue: 2)
+📱 AppDelegate supportedInterfaceOrientationsFor → UIInterfaceOrientationMask(rawValue: 2)
+📱 AppDelegate supportedInterfaceOrientationsFor → UIInterfaceOrientationMask(rawValue: 2)
+📱 AppDelegate supportedInterfaceOrientationsFor → UIInterfaceOrientationMask(rawValue: 2)
+📱 AppDelegate supportedInterfaceOrientationsFor → UIInterfaceOrientationMask(rawValue: 2)
+📱 AppDelegate supportedInterfaceOrientationsFor → UIInterfaceOrientationMask(rawValue: 2)
+Tracking element window has a non-placeholder input view: (null)
+Tracking element window has a non-placeholder input view: (null)
+Tracking element window has a non-placeholder input view: (null)
+Tracking element window has a non-placeholder input view: (null)
+Tracking element window has a non-placeholder input view: (null)
+🔄 YouTube v32: state=1, currentTime=8.180839183326272s
+🔄 YouTube v32: state=1, currentTime=8.685296608007807s
+🔄 YouTube v32: state=1, currentTime=9.433306543336327s
+📱 v43: appWillResignActive — saving position (guard: don't overwrite existing)
+🔄 YouTube v32: state=1, currentTime=9.933903997000415s
+📱 v43: appDidEnterBackground — saving position to Swift + pausing
+🔄 YouTube v32: state=2, currentTime=10.18572506432609s
+📱 v43: background — position 10.18572506432609s NOT saved (already have 8.1178940999896s)
+📱 v42: appWillEnterForeground — triggering full WKWebView reload (WebContent process was killed)
+📱 v42: RoomView received plinkWebviewNeedsReload — forcing re-render (trigger=1)
+🔧🔧🔧 makeUIView CALLED — WebViewControl.shared.webView exists: true
+💥 v41: makeUIView — needsFullReload=true, destroying old WKWebView
+💥 v41: destroyExistingWebView — removing from superview, releasing WKWebView
+📺 YouTube v43: full reload — will restore position 8.1178940999896s via JS global
+📺 YouTube v39: loading m.youtube.com/watch?v=hQUVIT8m-c0
+🎬 v38: VideoSectionContent — rendering VideoContainerView for streamURL=https://www.youtube.com/embed/hQUVIT8m-c0?playsinline=1&rel=0
+📱 v43: appDidBecomeActive — no-op (v43: removed reload to prevent position overwrite)
+📺 YouTube v34.30: early CSS injection at didCommit (embed mode)
+📺 YouTube v43: injected _plinkRestorePosition = 8.1178940999896s at didCommit
+🚫 YouTube v34.11: blocked redirect to accounts.google.com (bot check)
+Error acquiring assertion: <Error Domain=RBSAssertionErrorDomain Code=2 "Specified target process 2999 does not exist" UserInfo={NSLocalizedFailureReason=Specified target process 2999 does not exist}>
+0x138104600 - ProcessAssertion::acquireSync Failed to acquire RBS assertion 'WebProcess NearSuspended Assertion' for process with PID=2999, error: (null)
+📺 YouTube v32.1: page loaded (m.youtube.com), injecting CSS + JS bridge
+🎉 YouTube v32: video element ready — player initialized, duration=183.941s
+📏 SyncEngine v32.19: duration = 183.941s
+WebContent[3000] AudioSession::endInterruption but session is already uninterrupted!
+🔄 YouTube v32: state=1, currentTime=8.1178940999896s
+🔄 YouTube v32: state=1, currentTime=8.804016588663213s
+🔄 YouTube v32: state=1, currentTime=9.305591365999597s
+🔄 YouTube v32: state=1, currentTime=9.806632199322593s
+🔄 YouTube v32: state=1, currentTime=10.307412497991205s
+🔄 YouTube v32: state=1, currentTime=10.807904444008841s
+🔄 YouTube v32: state=1, currentTime=11.308056201333825s
+🔄 YouTube v32: state=1, currentTime=11.809334002998202s
+🔄 YouTube v32: state=1, currentTime=12.311166380343565s
+🔄 YouTube v32: state=1, currentTime=12.812594878325585s
+🔄 YouTube v32: state=1, currentTime=13.313692808679363s
+🔄 YouTube v32: state=1, currentTime=13.817898424989236s
+🔄 YouTube v32: state=1, currentTime=14.31873380501024s
+🔄 YouTube v32: state=1, currentTime=14.818917417659195s
