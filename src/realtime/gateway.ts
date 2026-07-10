@@ -1,20 +1,24 @@
-// src/realtime/gateway.ts — WebSocket gateway (runbook §5)
+// src/realtime/gateway.ts — WebSocket gateway (runbook §5 + Brain Review fixes)
 //
-// Replaces setupWebSocketHandler() in src/websocket/ws-handler.ts.
-// Differences from the legacy handler:
+// Brain Review fixes applied:
 //
-// 1. Auth via Sec-WebSocket-Protocol (ticket) — NOT URL query string (§2).
-//    The ticket is a short-lived (60s) single-use nonce issued by
-//    POST /api/realtime/ticket. See routes/realtime.ts.
-// 2. Single message router (messageRouter.ts) — no `msg.command && msg.roomID`
-//    shadowing of stateRequest.
-// 3. Membership check at JOIN and at every room-scoped action.
-// 4. Heartbeat via WS ping frames (heartbeat.ts) — not application-layer pings.
-// 5. Slow consumer guard (bufferedAmount > 512KB → close 1011).
-// 6. Graceful shutdown: stop accepting new connections, notify draining,
-//    close existing after 10s.
-// 7. session.ready message before any other traffic — clients must not treat
-//    the socket as "connected" until they receive it (runbook §19).
+// P0-1: ticket nonce key uses FULL nonce UUID (matches routes/realtime.ts).
+//       Ticket is bound to roomId — WS path roomId must match ticket.roomId.
+// P0-2: ONE pubsub listener per room per replica, ref-counted by local
+//       sockets. Listener reference is stored and reused for unsubscribe.
+//       On close: save roomId BEFORE disconnect, then release.
+// P0-3: All room-scoped broadcasts (chat, reaction, participant, sync.state)
+//       go through Redis PubSub via RoomEventBus. Local broadcast is the
+//       ONLY path the PubSub subscriber uses to fan out — so a published
+//       event reaches every local socket exactly once, regardless of which
+//       replica published it.
+// P1-2: effectiveAt — kept as-is (server sets now+80ms). Client-side
+//       OrderedSyncController is responsible for waiting until the
+//       effectiveAt deadline before applying play/pause. Server does NOT
+//       schedule its own wait.
+// P1-6: shutdown closes HTTP, WS, Redis subscriber, command Redis, Prisma.
+//       10s sleep replaced with drain promise with timeout.
+// P1-7: isMember accepts EITHER RoomParticipant row OR host-of-room.
 
 import type { WebSocketServer } from 'ws';
 import type { FastifyInstance } from 'fastify';
@@ -22,12 +26,14 @@ import type { PrismaClient } from '@prisma/client';
 import type { Redis } from 'ioredis';
 import { config } from '../config/index.js';
 import { RoomStateStore } from './roomStateStore.js';
-import { RoomPubSub } from './roomPubSub.js';
+import { RoomPubSub, type RoomStateListener } from './roomPubSub.js';
+import { RoomEventBus, type RoomEvent } from './roomEventBus.js';
 import { ConnectionRegistry, type PlinkSocket } from './connectionRegistry.js';
 import { createMessageRouter, makeSessionReady, makeParticipantEvent } from './messageRouter.js';
 import { Heartbeat } from './heartbeat.js';
 import { wsConnections, wsMessages, usersOnline } from '../services/metrics.js';
 import { presence } from '../services/presence.js';
+import type { ServerMessage } from '../contracts/realtime-v2.js';
 
 export interface GatewayDeps {
   fastify: FastifyInstance;
@@ -40,18 +46,27 @@ export class RealtimeGateway {
   private readonly registry = new ConnectionRegistry();
   private readonly store: RoomStateStore;
   private readonly pubsub: RoomPubSub;
+  private readonly eventBus: RoomEventBus;
   private readonly router: ReturnType<typeof createMessageRouter>;
   private readonly heartbeat: Heartbeat;
+
+  // P0-2: ONE listener per room on this replica, ref-counted.
+  // Stored reference is reused for unsubscribe — no leak.
+  private readonly roomListeners = new Map<string, RoomStateListener>();
+  private readonly roomEventListeners = new Map<string, (event: RoomEvent) => void>();
   private shuttingDown = false;
 
   constructor(private readonly deps: GatewayDeps) {
     this.store = new RoomStateStore(deps.redis);
     this.pubsub = new RoomPubSub(config.REDIS_URL);
+    this.eventBus = new RoomEventBus(config.REDIS_URL);
+
     this.router = createMessageRouter({
       prisma: deps.prisma,
       store: this.store,
       pubsub: this.pubsub,
       registry: this.registry,
+      eventBus: this.eventBus, // P0-3: router publishes chat/reaction via bus
       currentEpoch: async (roomId) => {
         const s = await this.store.get(roomId);
         return s?.epoch ?? 1;
@@ -69,9 +84,9 @@ export class RealtimeGateway {
     }
 
     // ── Auth via Sec-WebSocket-Protocol (runbook §2) ────────────────────
-    // Client opens with: new WebSocket(url, ['plink.v2', <ticket>])
-    // Server verifies the ticket, then the socket is authed.
-    const protocols = (req.headers['sec-websocket-protocol'] as string | undefined)?.split(',').map((s) => s.trim()) ?? [];
+    const protocols = (req.headers['sec-websocket-protocol'] as string | undefined)
+      ?.split(',')
+      .map((s) => s.trim()) ?? [];
     const ticket = protocols.find((p) => p.startsWith('plink.ticket.'));
 
     if (!ticket) {
@@ -79,14 +94,15 @@ export class RealtimeGateway {
       return;
     }
 
-    let userId: string;
-    let username: string;
-    let role: string;
+    let ticketPayload: {
+      userId: string;
+      username: string;
+      role: string;
+      roomId: string;
+      isHost: boolean;
+    };
     try {
-      const payload = await this.verifyTicket(ticket);
-      userId = payload.userId;
-      username = payload.username;
-      role = payload.role;
+      ticketPayload = await this.verifyTicket(ticket);
     } catch (err) {
       socket.close(4001, `Ticket invalid: ${(err as Error).message}`);
       return;
@@ -94,7 +110,7 @@ export class RealtimeGateway {
 
     // Banned check
     const user = await this.deps.prisma.user.findUnique({
-      where: { id: userId },
+      where: { id: ticketPayload.userId },
       select: { id: true, username: true, role: true, bannedUntil: true },
     });
     if (!user) {
@@ -118,56 +134,65 @@ export class RealtimeGateway {
     // ── Parse roomId from URL path (NOT query) ──────────────────────────
     const url = new URL(req.url, 'http://localhost');
     const pathParts = url.pathname.split('/').filter(Boolean);
-    // /ws/room/<roomId> OR /ws?roomId=...
-    let roomId: string | undefined;
+    let wsRoomId: string | undefined;
     if (pathParts.length >= 3 && pathParts[1] === 'room') {
-      roomId = pathParts[2];
+      wsRoomId = pathParts[2];
     }
-    if (!roomId) {
-      roomId = url.searchParams.get('roomId') ?? undefined;
+    if (!wsRoomId) {
+      wsRoomId = url.searchParams.get('roomId') ?? undefined;
     }
 
-    if (roomId) {
-      // Membership check at JOIN (runbook §5)
-      const isMember = await this.isMember(user.id, roomId);
-      if (!isMember) {
-        sendError(socket, 'NOT_MEMBER', 'User is not a member of this room');
-        socket.close(4003, 'Not a room member');
-        return;
-      }
-      this.registry.join(socket, roomId);
-      presence.joinRoom(socket, roomId);
-
-      // Subscribe to cross-replica fanout
-      this.pubsub.subscribe(roomId, (state) => {
-        this.registry.broadcastLocal(roomId, {
-          type: 'sync.state',
-          protocolVersion: 2,
-          roomId,
-          state,
-          serverTimeMs: Date.now(),
-        });
-      });
-
-      // Notify others on this replica
-      this.registry.broadcastLocal(
-        roomId,
-        makeParticipantEvent('participant.joined', roomId, user.id, user.username),
-        socket,
-      );
-
-      // Send session.ready — clients MUST wait for this before considering
-      // the socket usable (runbook §8, §19).
-      const isHost = (await this.deps.prisma.room.findUnique({
-        where: { id: roomId },
-        select: { hostID: true },
-      }))?.hostID === user.id;
-      socket.send(JSON.stringify(makeSessionReady(roomId, isHost ? 'host' : 'viewer')));
+    if (!wsRoomId) {
+      sendError(socket, 'NO_ROOM', 'roomId required in WS path');
+      socket.close(4001, 'roomId required');
+      return;
     }
+
+    // P0-1: ticket is bound to roomId — WS path must match ticket.roomId.
+    if (wsRoomId !== ticketPayload.roomId) {
+      sendError(socket, 'ROOM_MISMATCH', 'Ticket roomId does not match WS path roomId');
+      socket.close(4003, 'Ticket room mismatch');
+      return;
+    }
+    const roomId = wsRoomId;
+
+    // P1-7: membership OR host
+    const isMember = await this.isMemberOrHost(user.id, roomId);
+    if (!isMember) {
+      sendError(socket, 'NOT_MEMBER', 'User is not a member or host of this room');
+      socket.close(4003, 'Not a room member or host');
+      return;
+    }
+
+    this.registry.join(socket, roomId);
+    presence.joinRoom(socket, roomId);
+
+    // P0-2: retain ONE pubsub listener for this room on this replica.
+    // Failure to subscribe is fatal for this session — close before ready.
+    try {
+      await this.retainRoom(roomId);
+    } catch (err) {
+      sendError(socket, 'PUBSUB_FAILED', `Failed to subscribe: ${(err as Error).message}`);
+      socket.close(1011, 'PubSub subscribe failed');
+      return;
+    }
+
+    // Notify others on this replica AND other replicas via event bus
+    await this.eventBus.publish(roomId, {
+      kind: 'participant.joined',
+      roomId,
+      userId: user.id,
+      username: user.username,
+      timestampMs: Date.now(),
+    });
+
+    // Send session.ready — clients MUST wait for this before considering
+    // the socket usable (runbook §8, §19).
+    const role = ticketPayload.isHost ? 'host' : 'viewer';
+    socket.send(JSON.stringify(makeSessionReady(roomId, role)));
 
     socket.on('message', (raw: Buffer) => {
       wsMessages.inc({ type: 'inbound', direction: 'in' });
-      // Router is async; swallow errors so they don't crash the event loop.
       this.router.handleMessage(socket, raw).catch((err) => {
         console.error('[RealtimeGateway] router error:', err);
         sendError(socket, 'INTERNAL', 'Internal server error');
@@ -176,18 +201,27 @@ export class RealtimeGateway {
 
     socket.on('close', () => {
       wsConnections.dec();
+      // P0-2: save roomId BEFORE disconnect — registry.disconnect clears
+      // socket.activeRoomId.
+      const closedRoomId = socket.activeRoomId;
       this.registry.disconnect(socket);
       presence.disconnect(socket);
       usersOnline.set(presence.getOnlineUsers().length);
 
-      if (socket.activeRoomId) {
-        // Notify other local participants
-        this.registry.broadcastLocal(
-          socket.activeRoomId,
-          makeParticipantEvent('participant.left', socket.activeRoomId, user.id, user.username),
-        );
-        // Unsubscribe from PubSub if no local listeners remain
-        this.pubsub.unsubscribe(socket.activeRoomId, this.pubsubListener).catch(() => {});
+      if (closedRoomId) {
+        // Notify via event bus (other replicas + local)
+        this.eventBus
+          .publish(closedRoomId, {
+            kind: 'participant.left',
+            roomId: closedRoomId,
+            userId: user.id,
+            username: user.username,
+            timestampMs: Date.now(),
+          })
+          .catch(() => {});
+
+        // P0-2: release room listener if no local sockets remain
+        this.releaseRoomIfEmpty(closedRoomId).catch(() => {});
       }
     });
 
@@ -196,73 +230,165 @@ export class RealtimeGateway {
     });
   }
 
-  // ── Helpers ────────────────────────────────────────────────────────────
-  private async isMember(userId: string, roomId: string): Promise<boolean> {
-    // RoomParticipant rows are deleted on leave (no leftAt field).
-    try {
-      const p = await this.deps.prisma.roomParticipant.findUnique({
-        where: { roomID_userID: { roomID: roomId, userID: userId } },
-        select: { id: true },
-      });
-      return p !== null;
-    } catch {
-      const p = await this.deps.prisma.roomParticipant.findFirst({
-        where: { roomID: roomId, userID: userId },
-        select: { id: true },
-      });
-      return p !== null;
+  // ── P0-2: ref-counted room listeners ───────────────────────────────────
+  private async retainRoom(roomId: string): Promise<void> {
+    // State listener (sync.state fanout)
+    if (!this.roomListeners.has(roomId)) {
+      const listener: RoomStateListener = (state) => {
+        const msg: ServerMessage = {
+          type: 'sync.state',
+          protocolVersion: 2,
+          roomId,
+          state,
+          serverTimeMs: Date.now(),
+        };
+        this.registry.broadcastLocal(roomId, msg);
+      };
+      this.roomListeners.set(roomId, listener);
+      await this.pubsub.subscribe(roomId, listener);
+    }
+
+    // Event listener (chat/reaction/participant fanout) — P0-3
+    if (!this.roomEventListeners.has(roomId)) {
+      const eventListener = (event: RoomEvent) => {
+        const msg = this.eventToServerMessage(event);
+        if (msg) this.registry.broadcastLocal(roomId, msg);
+      };
+      this.roomEventListeners.set(roomId, eventListener);
+      await this.eventBus.subscribe(roomId, eventListener);
     }
   }
 
-  private async verifyTicket(
-    ticket: string,
-  ): Promise<{ userId: string; username: string; role: string }> {
+  private async releaseRoomIfEmpty(roomId: string): Promise<void> {
+    if (this.registry.getRoomSockets(roomId).length > 0) return;
+
+    const stateListener = this.roomListeners.get(roomId);
+    if (stateListener) {
+      this.roomListeners.delete(roomId);
+      await this.pubsub.unsubscribe(roomId, stateListener);
+    }
+    const eventListener = this.roomEventListeners.get(roomId);
+    if (eventListener) {
+      this.roomEventListeners.delete(roomId);
+      await this.eventBus.unsubscribe(roomId, eventListener);
+    }
+  }
+
+  private eventToServerMessage(event: RoomEvent): ServerMessage | null {
+    switch (event.kind) {
+      case 'participant.joined':
+        return makeParticipantEvent('participant.joined', event.roomId, event.userId, event.username);
+      case 'participant.left':
+        return makeParticipantEvent('participant.left', event.roomId, event.userId, event.username);
+      case 'chat.broadcast':
+        return {
+          type: 'chat.broadcast',
+          protocolVersion: 2,
+          roomId: event.roomId,
+          messageId: event.messageId,
+          clientMessageId: event.clientMessageId ?? null,
+          senderId: event.senderId,
+          senderName: event.senderName,
+          text: event.text,
+          createdAtMs: event.createdAtMs,
+        };
+      case 'reaction.broadcast':
+        return {
+          type: 'reaction.broadcast',
+          protocolVersion: 2,
+          roomId: event.roomId,
+          userId: event.userId,
+          username: event.username,
+          emoji: event.emoji,
+          serverTimeMs: event.serverTimeMs,
+        };
+      default:
+        return null;
+    }
+  }
+
+  // ── Helpers ────────────────────────────────────────────────────────────
+  private async isMemberOrHost(userId: string, roomId: string): Promise<boolean> {
+    const [participant, room] = await Promise.all([
+      this.deps.prisma.roomParticipant
+        .findUnique({
+          where: { roomID_userID: { roomID: roomId, userID: userId } },
+          select: { id: true },
+        })
+        .catch(() => null),
+      this.deps.prisma.room.findUnique({
+        where: { id: roomId },
+        select: { hostID: true, isActive: true },
+      }),
+    ]);
+    if (!room || !room.isActive) return false;
+    return room.hostID === userId || participant !== null;
+  }
+
+  private async verifyTicket(ticket: string): Promise<{
+    userId: string;
+    username: string;
+    role: string;
+    roomId: string;
+    isHost: boolean;
+  }> {
     // Ticket format: plink.ticket.<jwt>
     const token = ticket.substring('plink.ticket.'.length);
     const payload = this.deps.fastify.jwt.verify(token) as {
       id: string;
       username: string;
       role: string;
+      roomId: string;
+      nonce: string;
+      host?: boolean;
       typ?: string;
     };
     if (payload.typ !== 'realtime_ticket') {
       throw new Error('not a realtime ticket');
     }
-    // Single-use: delete from Redis nonce set
-    const ok = await this.deps.redis.del(`plink:ticket:${payload.id}:${token.slice(-12)}`);
+    if (!payload.roomId || !payload.nonce) {
+      throw new Error('ticket missing roomId or nonce');
+    }
+    // P0-1: single-use nonce — DEL uses FULL nonce UUID (matches
+    // routes/realtime.ts which SETs the same key).
+    const ok = await this.deps.redis.del(`plink:ticket:${payload.id}:${payload.nonce}`);
     if (ok === 0) throw new Error('ticket already used or expired');
-    return { userId: payload.id, username: payload.username, role: payload.role };
+    return {
+      userId: payload.id,
+      username: payload.username,
+      role: payload.role,
+      roomId: payload.roomId,
+      isHost: payload.host === true,
+    };
   }
 
-  private pubsubListener = (state: any) => {
-    // Placeholder — replaced per-room in onConnection
-    void state;
-  };
-
-  /** Graceful shutdown (runbook §5). */
+  /** Graceful shutdown (runbook §5, P1-6). */
   async shutdown(): Promise<void> {
     this.shuttingDown = true;
     this.heartbeat.close();
 
     // Notify all clients
+    const drainMessage = JSON.stringify({
+      type: 'server.draining',
+      protocolVersion: 2,
+      message: 'Server shutting down — please reconnect',
+      retryInMs: 2000,
+    });
     for (const sock of this.deps.wss.clients) {
       const s = sock as PlinkSocket;
       if (s.readyState === s.OPEN) {
         try {
-          s.send(
-            JSON.stringify({
-              type: 'server.draining',
-              protocolVersion: 2,
-              message: 'Server shutting down — please reconnect',
-              retryInMs: 2000,
-            }),
-          );
+          s.send(drainMessage);
         } catch {}
       }
     }
 
-    // Wait up to 10s for clients to drain
-    await new Promise((r) => setTimeout(r, 10_000));
+    // P1-6: drain with timeout (not unconditional 10s sleep)
+    const drainDeadline = Date.now() + 10_000;
+    while (Date.now() < drainDeadline) {
+      if (this.deps.wss.clients.size === 0) break;
+      await new Promise((r) => setTimeout(r, 250));
+    }
 
     // Close everything
     for (const sock of this.deps.wss.clients) {
@@ -271,7 +397,7 @@ export class RealtimeGateway {
         s.close(1001, 'Server shutting down');
       } catch {}
     }
-    await this.pubsub.close();
+    await Promise.allSettled([this.pubsub.close(), this.eventBus.close()]);
   }
 }
 
