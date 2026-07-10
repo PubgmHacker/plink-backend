@@ -110,7 +110,6 @@ export class ConnectionRegistry {
     for (const s of sockets) {
       if (s.readyState !== s.OPEN) continue;
       // Slow consumer guard — don't add to a backpressured socket
-      // @ts-expect-error bufferedAmount exists on ws.WebSocket
       if ((s.bufferedAmount ?? 0) > 256 * 1024) continue;
       s.send(encoded);
     }
@@ -122,7 +121,6 @@ export class ConnectionRegistry {
     for (const set of this.rooms.values()) count += set.size;
     return count;
   }
-
   /** Number of rooms with at least one local connection. */
   get activeRooms(): number {
     return this.rooms.size;

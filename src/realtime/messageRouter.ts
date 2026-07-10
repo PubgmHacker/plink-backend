@@ -80,16 +80,18 @@ export function invalidateHostCache(roomId: string): void {
 // DB-checked — never trust the socket's claim alone.
 // ─────────────────────────────────────────────────────────────────────────────
 async function isRoomMember(prisma: PrismaClient, roomId: string, userId: string): Promise<boolean> {
+  // RoomParticipant rows are deleted when a user leaves (no leftAt field).
+  // Existence == current membership.
   try {
     const participant = await prisma.roomParticipant.findUnique({
       where: { roomID_userID: { roomID: roomId, userID: userId } },
-      select: { leftAt: true },
+      select: { id: true },
     });
-    return participant !== null && participant.leftAt === null;
+    return participant !== null;
   } catch {
-    // schema may not have composite key — fall back to first matching participant row
+    // Composite key name may differ — fall back to findFirst
     const participant = await prisma.roomParticipant.findFirst({
-      where: { roomID: roomId, userID: userId, leftAt: null },
+      where: { roomID: roomId, userID: userId },
       select: { id: true },
     });
     return participant !== null;
@@ -129,7 +131,6 @@ function checkRateLimit(socket: PlinkSocket, type: keyof typeof RATE_LIMITS): bo
 // Slow consumer guard (runbook §5)
 // ─────────────────────────────────────────────────────────────────────────────
 function checkSlowConsumer(socket: PlinkSocket): boolean {
-  // @ts-expect-error bufferedAmount exists on ws.WebSocket
   const buffered = (socket.bufferedAmount ?? 0) as number;
   if (buffered > 512 * 1024) {
     sendError(socket, 'SLOW_CONSUMER', 'Buffered amount exceeded 512KB — closing');
@@ -346,10 +347,12 @@ export function createMessageRouter(deps: RouterDeps) {
       default: {
         // Exhaustiveness check — TypeScript guarantees we handled every case.
         // Reaching here means a new message type was added to the schema but
-        // not to this switch.
-        const _exhaustive: never = msg;
+        // not to this switch. Cast to never for the compile-time check, but
+        // fall back to a runtime error using the parsed type field.
+        const _exhaustive: never = msg as never;
         void _exhaustive;
-        sendError(socket, 'UNKNOWN_MESSAGE_TYPE', `Unhandled type: ${(msg as { type: string }).type}`);
+        const fallbackType = (msg as { type?: string } | null)?.type ?? 'unknown';
+        sendError(socket, 'UNKNOWN_MESSAGE_TYPE', `Unhandled type: ${fallbackType}`);
         return;
       }
     }

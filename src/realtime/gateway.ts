@@ -93,7 +93,7 @@ export class RealtimeGateway {
     }
 
     // Banned check
-    const user = await deps.prisma.user.findUnique({
+    const user = await this.deps.prisma.user.findUnique({
       where: { id: userId },
       select: { id: true, username: true, role: true, bannedUntil: true },
     });
@@ -198,15 +198,16 @@ export class RealtimeGateway {
 
   // ── Helpers ────────────────────────────────────────────────────────────
   private async isMember(userId: string, roomId: string): Promise<boolean> {
+    // RoomParticipant rows are deleted on leave (no leftAt field).
     try {
       const p = await this.deps.prisma.roomParticipant.findUnique({
         where: { roomID_userID: { roomID: roomId, userID: userId } },
-        select: { leftAt: true },
+        select: { id: true },
       });
-      return p !== null && p.leftAt === null;
+      return p !== null;
     } catch {
       const p = await this.deps.prisma.roomParticipant.findFirst({
-        where: { roomID: roomId, userID: userId, leftAt: null },
+        where: { roomID: roomId, userID: userId },
         select: { id: true },
       });
       return p !== null;

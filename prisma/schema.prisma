@@ -94,6 +94,7 @@ model RoomParticipant {
   joinedAt DateTime @default(now())
 
   @@unique([roomID, userID])
+  @@index([userID, joinedAt])
 }
 
 model ChatMessage {
@@ -105,7 +106,7 @@ model ChatMessage {
   text      String
   createdAt DateTime @default(now())
 
-  @@index([roomID])
+  @@index([roomID, createdAt])
 }
 
 model DirectMessage {
@@ -163,6 +164,9 @@ model PlaybackState {
   currentTime    Float    @default(0)
   isPlaying   Boolean  @default(false)
   updatedAt   DateTime @updatedAt
+
+  @@unique([roomID, userID])
+  @@index([roomID, updatedAt])
 }
 
 model Subscription {

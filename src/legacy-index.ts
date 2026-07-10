@@ -10,7 +10,10 @@ import { prisma } from './config/db.js';
 import { checkRedis } from './config/redis.js';
 import { authenticate } from './middleware/auth.js';
 import { securityHeaders } from './middleware/security.js';
-import { setupWebSocketHandler } from './websocket/ws-handler.js';
+// LEGACY: this file is preserved for v1 rollback per runbook §0.
+// It is NOT imported by src/app.ts or src/server.ts in v2 builds.
+// The import path below points at the renamed legacy ws-handler.
+import { setupWebSocketHandler } from './websocket/legacy-ws-handler.js';
 import { register } from './services/metrics.js';
 import { initTelemetry } from './services/telemetry.js';
 import authRoutes from './routes/auth.js';

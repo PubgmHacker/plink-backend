@@ -63,6 +63,19 @@ export const ReactionSendSchema = z
   })
   .strict();
 
+/** Reaction broadcast (server → all room clients). */
+export const ReactionBroadcastSchema = z
+  .object({
+    type: z.literal('reaction.broadcast'),
+    protocolVersion: z.literal(2),
+    roomId: z.string().uuid(),
+    userId: z.string().uuid(),
+    username: z.string().min(1).max(64),
+    emoji: z.string().min(1).max(32),
+    serverTimeMs: z.number().int(),
+  })
+  .strict();
+
 /** Clock probe — client→server→client round-trip for ClockSynchronizer. */
 export const ClockProbeSchema = z
   .object({
@@ -185,6 +198,7 @@ export type SyncStateMessage = z.infer<typeof SyncStateMessageSchema>;
 export type SyncStateSnapshotMessage = z.infer<typeof SyncStateSnapshotMessageSchema>;
 export type ClockProbeReply = z.infer<typeof ClockProbeReplySchema>;
 export type ChatBroadcast = z.infer<typeof ChatBroadcastSchema>;
+export type ReactionBroadcast = z.infer<typeof ReactionBroadcastSchema>;
 export type ParticipantEvent = z.infer<typeof ParticipantEventSchema>;
 export type ErrorMessage = z.infer<typeof ErrorMessageSchema>;
 export type SessionReady = z.infer<typeof SessionReadySchema>;
@@ -206,6 +220,7 @@ export const ServerMessageSchema = z.discriminatedUnion('type', [
   SyncStateSnapshotMessageSchema,
   ClockProbeReplySchema,
   ChatBroadcastSchema,
+  ReactionBroadcastSchema,
   ParticipantEventSchema,
   ErrorMessageSchema,
   SessionReadySchema,
@@ -227,6 +242,7 @@ export const SERVER_MESSAGE_TYPES = [
   'sync.state.snapshot',
   'clock.probe.reply',
   'chat.broadcast',
+  'reaction.broadcast',
   'participant.joined',
   'participant.left',
   'error',
