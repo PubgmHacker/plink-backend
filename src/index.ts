@@ -156,14 +156,26 @@ fastify.get('/api/media/stream', {
   const b64urlParam = new URLSearchParams(rawQuery).get('b64url');
   const urlParam = new URLSearchParams(rawQuery).get('url');
   const tokenParam = new URLSearchParams(rawQuery).get('token');
+  const b64cookiesParam = new URLSearchParams(rawQuery).get('b64cookies');
 
-  console.log('[Relay] videoId:', videoIdParam || 'none', 'b64url:', !!b64urlParam, 'url:', !!urlParam);
+  console.log('[Relay] videoId:', videoIdParam || 'none', 'b64url:', !!b64urlParam, 'b64cookies:', !!b64cookiesParam);
 
   if (!tokenParam) return reply.status(401).send({ error: 'Token required' });
   try {
     fastify.jwt.verify(tokenParam);
   } catch {
     return reply.status(401).send({ error: 'Invalid token' });
+  }
+
+  // v96: Decode cookies from base64
+  let cookieHeader = '';
+  if (b64cookiesParam) {
+    try {
+      cookieHeader = Buffer.from(b64cookiesParam, 'base64').toString('utf-8');
+      console.log('[Relay] ✅ Decoded cookies, length:', cookieHeader.length);
+    } catch {
+      console.log('[Relay] ⚠️ Failed to decode cookies');
+    }
   }
 
   // Determine target URL
@@ -217,6 +229,11 @@ fastify.get('/api/media/stream', {
       'Referer': 'https://www.youtube.com/',
       'Origin': 'https://www.youtube.com',
     };
+    // v96: Add cookies from client (Authenticated Proxy)
+    if (cookieHeader) {
+      upstreamHeaders['Cookie'] = cookieHeader;
+      console.log('[Relay] ✅ Sending cookies to YouTube CDN');
+    }
     if (request.headers.range) upstreamHeaders['Range'] = request.headers.range;
 
     console.log('[Relay] Fetching from YouTube CDN...');
