@@ -105,6 +105,9 @@ export function generateTOTPCode(secret: string, timestamp = Date.now()): string
 
 /** Проверка TOTP кода (с окном ±1 step для рассинхрона часов) */
 export function verifyTOTP(secret: string, code: string): boolean {
+  // v104: validate code format before timingSafeEqual — Buffer compare
+  // requires equal lengths, otherwise crypto.timingSafeEqual throws.
+  if (!/^\d{6}$/.test(code)) return false;
   const now = Date.now();
   for (const offset of [-30000, 0, 30000]) {
     const expected = generateTOTPCode(secret, now + offset);

@@ -24,8 +24,6 @@ import gdprRoutes from './routes/gdpr.js';
 import featureFlagRoutes from './routes/featureFlags.js';
 import aiRoutes from './routes/ai.js';  // ← Pack 6
 import { alertCritical } from './utils/alerting.js';
-import { pipeline } from 'node:stream';
-import { Readable } from 'node:stream';
 
 initTelemetry(process.env.OTEL_ENDPOINT);
 
@@ -71,415 +69,117 @@ fastify.decorate('authenticate', authenticate);
 fastify.addHook('onRequest', securityHeaders);
 
 // ═══════════════════════════════════════════════════════════════════════════
-// v100: Authenticated Server-Side Extraction (StreamRelay)
+// v104: HLS-only Safe Relay (StreamRelay)
 // ═══════════════════════════════════════════════════════════════════════════
-// PROBLEM (v97-v99):
-//   - v97 transparent-proxy: strips `ip` from URL → breaks signature → 403
-//   - v99 IOS innertube from WebView: sync XHR blocked, fell through to MP4
-//   - yt-dlp on Railway: blocked (429 / Precondition Failed) regardless of cookies
+// v90-v103 history: backend extraction (yt-dlp/Piped/innertube) all blocked
+// on Railway IP. Strip-ip breaks signature. WebView extraction unreliable.
 //
-// SOLUTION (v100): Server does the IOS innertube API call ITSELF.
-//   1. iOS sends: videoId + b64cookies + b64ua (just identity, no extracted URL)
-//   2. Backend POSTs to https://www.youtube.com/youtubei/v1/player with:
-//        - clientName: 'IOS' (returns hlsManifestUrl, NOT IP-bound)
-//        - iPhone cookies (VISITOR_INFO1_LIVE, YSC, etc.)
-//        - iPhone User-Agent (matches the iPhone that "owns" the cookies)
-//        - SAPISIDHASH Authorization header (computed from SAPISID cookie)
-//   3. YouTube generates URL bound to BACKEND IP (since backend made the request)
-//   4. Backend immediately fetches that URL from the SAME IP → IP matches → 200 OK
-//   5. Backend pipes bytes to AVPlayer
+// v104 solution: backend is a DUMB PIPE for HLS manifests only.
+//   - iOS extracts hlsManifestUrl via URLSession (iPhone IP, not blocked)
+//   - iOS sends b64url to backend
+//   - Backend validates URL is HTTPS + trusted host + HLS path marker
+//   - Backend fetches manifest (no mutation of signed URL)
+//   - Backend pipes manifest bytes to AVPlayer
+//   - AVPlayer fetches segments DIRECTLY from iPhone IP (manifest has
+//     absolute segment URLs that are IP-bound to iPhone — extraction IP
+//     matches playback IP → 200 OK)
 //
-// Why this works where v95/v96 yt-dlp failed:
-//   - yt-dlp triggers YouTube's bot detection (it's a known scraper tool)
-//   - /youtubei/v1/player is just a JSON HTTP API — no bot detection
-//   - With iPhone cookies, YouTube sees the request as the iPhone user
-//   - HLS manifest URLs (hlsManifestUrl) are NOT IP-bound (sparams lacks `ip`)
-//     → even if AVPlayer somehow fetched directly, would still work
-//   - But more importantly: extraction-IP == streaming-IP (both = backend)
-//
-// Mode priority:
-//   - videoId + cookies + UA (v100 authenticated server extract) ← PRIMARY
-//   - b64url (v97 transparent proxy) ← fallback (will 403, kept for safety)
-//   - url (legacy) ← last resort
+// Security:
+//   - HTTPS only (no HTTP, no IP literals, no credentials, no custom ports)
+//   - Trusted host allowlist: youtube.com / googlevideo.com (and subdomains)
+//   - HLS path markers required: /manifest/hls, hls_playlist, .m3u8
+//   - Redirect validation: every redirect re-checked against allowlist
+//   - Size limit: manifest ≤ 2MB
+//   - Content-Type validation: only mpegurl or application/vnd.apple
+//   - No URL mutation (signed URL preserved exactly)
+//   - No logging of token/URL
 // ═══════════════════════════════════════════════════════════════════════════
-const PIPED_INSTANCES = [
-  'https://pipedapi.kavin.rocks',
-  'https://pipedapi.leptons.xyz',
-  'https://pipedapi.r4fo.com',
-];
 
-/**
- * v100: Build SAPISIDHASH header from SAPISID cookie.
- * YouTube requires this header for authenticated innertube API calls.
- * Format: SAPISIDHASH = <unix_timestamp>_<SHA1(SAPISID + " " + origin + " " + timestamp)>
- */
-function buildSapisidHash(cookieHeader: string, origin: string): string | null {
-  const match = cookieHeader.match(/SAPISID=([^;]+)/);
-  if (!match) return null;
-  const sapisid = match[1];
-  const ts = Math.floor(Date.now() / 1000);
-  // Use Node.js crypto module
-  const crypto = require('crypto');
-  const hash = crypto.createHash('sha1')
-    .update(`${sapisid} ${origin} ${ts}`)
-    .digest('hex');
-  return `SAPISIDHASH ${ts}_${hash}`;
+const HLS_PATH_MARKERS = ['/manifest/hls', 'hls_playlist', '.m3u8'];
+
+function decodeBase64Strict(value: string): string {
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(value) || value.length > 16_384) {
+    throw new Error('Invalid base64');
+  }
+  return Buffer.from(value, 'base64').toString('utf8');
 }
 
-/**
- * v100: Authenticated IOS innertube API extraction.
- *
- * POSTs to /youtubei/v1/player with iPhone cookies + UA + SAPISIDHASH.
- * YouTube returns streamingData with hlsManifestUrl (preferred) or formats[].
- *
- * The URL YouTube generates is bound to BACKEND IP (since backend made the
- * request). Backend then fetches that URL from the same IP → IP matches → 200.
- */
-async function extractStreamURLAuthenticated(
-  videoId: string,
-  cookieHeader: string,
-  userAgent: string
-): Promise<string> {
-  console.log('[Extract-v100] Authenticated IOS innertube extraction for', videoId);
-  console.log('[Extract-v100] Cookies length:', cookieHeader.length, 'UA length:', userAgent.length);
-
-  // SAPISIDHASH for authenticated request (uses SAPISID cookie if present)
-  const origin = 'https://www.youtube.com';
-  const authHash = buildSapisidHash(cookieHeader, origin);
-
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-    'User-Agent': userAgent,
-    'Origin': origin,
-    'Referer': origin + '/',
-    'X-YouTube-Client-Name': '5',      // 5 = IOS client
-    'X-YouTube-Client-Version': '17.31.4',
-    'Accept-Language': 'en-US,en;q=0.9',
-  };
-  if (cookieHeader) {
-    headers['Cookie'] = cookieHeader;
+function assertTrustedHlsUrl(value: string): URL {
+  const url = new URL(value);
+  if (url.protocol !== 'https:' || url.username || url.password || url.port) {
+    throw new Error('Only HTTPS manifest URLs are allowed');
   }
-  if (authHash) {
-    headers['Authorization'] = authHash;
-    console.log('[Extract-v100] ✅ Built SAPISIDHASH authorization header');
-  } else {
-    console.log('[Extract-v100] ⚠️ No SAPISID cookie found — request will be unauthenticated');
+  const host = url.hostname.toLowerCase();
+  const trusted = host === 'youtube.com' || host.endsWith('.youtube.com') ||
+                  host === 'googlevideo.com' || host.endsWith('.googlevideo.com');
+  if (!trusted) throw new Error('Untrusted manifest host');
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(host) || host === 'localhost') {
+    throw new Error('IP literals are not allowed');
   }
-
-  const body = JSON.stringify({
-    context: {
-      client: {
-        clientName: 'IOS',
-        clientVersion: '17.31.4',
-        hl: 'en',
-        gl: 'US'
-      }
-    },
-    videoId: videoId,
-    playbackContext: {
-      contentPlaybackContext: {
-        html5Preference: 'HTML5_PREF_WANTS',
-        signatureTimestamp: 20075  // recent STS, YouTube accepts a wide range
-      }
-    }
-  });
-
-  const url = 'https://www.youtube.com/youtubei/v1/player?key=AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8&prettyPrint=false';
-  console.log('[Extract-v100] POST', url.substring(0, 80) + '...');
-
-  const res = await fetch(url, {
-    method: 'POST',
-    headers,
-    body,
-    signal: AbortSignal.timeout(15000),
-  });
-
-  console.log('[Extract-v100] Response status:', res.status);
-
-  if (!res.ok) {
-    const errText = await res.text().catch(() => '');
-    throw new Error(`innertube ${res.status}: ${errText.substring(0, 200)}`);
+  const path = url.pathname.toLowerCase();
+  if (!HLS_PATH_MARKERS.some(marker => path.includes(marker))) {
+    throw new Error('Only HLS manifests are allowed');
   }
-
-  const data: any = await res.json();
-  const sd = data?.streamingData;
-  if (!sd) {
-    throw new Error('innertube: no streamingData in response. playabilityStatus=' +
-      JSON.stringify(data?.playabilityStatus)?.substring(0, 200));
-  }
-
-  // Priority 1: HLS manifest (NOT IP-bound, works through proxy AND direct)
-  if (sd.hlsManifestUrl) {
-    console.log('[Extract-v100] ✅ Got hlsManifestUrl (NOT IP-bound)');
-    return sd.hlsManifestUrl;
-  }
-
-  // Priority 2: muxed MP4 (IP-bound to backend — backend fetches it, so OK)
-  const formats = sd.formats || [];
-  const best = formats.find((f: any) => f.itag === 22)
-            || formats.find((f: any) => f.itag === 18)
-            || formats[0];
-  if (best && best.url) {
-    console.log('[Extract-v100] ✅ Got MP4 itag:', best.itag, '(IP-bound to backend, will fetch directly)');
-    return best.url;
-  }
-
-  throw new Error('innertube: no hlsManifestUrl and no formats in streamingData');
+  return url;
 }
 
-async function extractStreamURL(videoId: string): Promise<string> {
-  // Try Piped API first (fastest)
-  for (const instance of PIPED_INSTANCES) {
-    try {
-      console.log('[Extract] Trying Piped:', instance);
-      const res = await fetch(`${instance}/streams/${videoId}`, {
-        signal: AbortSignal.timeout(8000),
-      });
-      if (!res.ok) continue;
-      const data: any = await res.json();
-
-      // Priority 1: muxed MP4 (itag 22=720p, 18=360p)
-      if (data.videoStreams && Array.isArray(data.videoStreams)) {
-        const muxed = data.videoStreams.filter((s: any) => !s.videoOnly);
-        const best = muxed.find((s: any) => s.itag === 22)
-                   || muxed.find((s: any) => s.itag === 18)
-                   || muxed[0];
-        if (best && best.url) {
-          console.log('[Extract] ✅ Piped muxed MP4 itag:', best.itag);
-          return best.url;
-        }
-      }
-
-      // Priority 2: HLS
-      if (data.hls) {
-        console.log('[Extract] ✅ Piped HLS');
-        return data.hls;
-      }
-    } catch (e: any) {
-      console.log('[Extract] Piped failed:', e.message);
+async function fetchTrustedManifest(initial: URL): Promise<Response> {
+  let current = initial;
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const response = await fetch(current, {
+      redirect: 'manual',
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15',
+        'Referer': 'https://www.youtube.com/'
+      },
+      signal: AbortSignal.timeout(10_000)
+    });
+    if ([301, 302, 303, 307, 308].includes(response.status)) {
+      const location = response.headers.get('location');
+      if (!location) throw new Error('Invalid redirect');
+      current = assertTrustedHlsUrl(new URL(location, current).toString());
+      continue;
     }
+    return response;
   }
-
-  // Fallback: yt-dlp (if available on Railway)
-  try {
-    console.log('[Extract] Trying yt-dlp...');
-    const { execSync } = await import('child_process');
-    const output = execSync(
-      `yt-dlp -f "best[ext=mp4][vcodec!=none][acodec!=none]/best[vcodec!=none][acodec!=none]" -g "https://www.youtube.com/watch?v=${videoId}"`,
-      { timeout: 15000, encoding: 'utf-8' }
-    ).trim();
-    if (output && output.includes('http')) {
-      console.log('[Extract] ✅ yt-dlp URL:', output.substring(0, 80));
-      return output;
-    }
-  } catch (e: any) {
-    console.log('[Extract] yt-dlp failed:', e.message?.substring(0, 100));
-  }
-
-  throw new Error('All extraction methods failed');
+  throw new Error('Too many redirects');
 }
-
-// Cache for extracted URLs (5 min TTL — googlevideo URLs live ~6h)
-const urlCache = new Map<string, { url: string; expires: number }>();
 
 fastify.get('/api/media/stream', {
   config: { rateLimit: { max: 60, timeWindow: '1 minute' } }
 }, async (request: any, reply: any) => {
-  console.log('[Relay] ====== StreamRelay request received ======');
-
-  // Override security headers for AVPlayer
   reply.header('Cross-Origin-Resource-Policy', 'cross-origin');
   reply.header('Cross-Origin-Embedder-Policy', 'unsafe-none');
-  reply.header('Access-Control-Allow-Origin', '*');
-  reply.header('Access-Control-Allow-Headers', 'Range, Content-Type');
-  reply.header('Access-Control-Expose-Headers', 'Content-Range, Content-Length, Accept-Ranges');
+  reply.header('Cache-Control', 'private, no-store');
 
-  // Parse raw query string
-  const rawQuery = request.url.split('?')[1] || '';
-  const videoIdParam = new URLSearchParams(rawQuery).get('videoId');
-  const b64urlParam = new URLSearchParams(rawQuery).get('b64url');
-  const urlParam = new URLSearchParams(rawQuery).get('url');
-  const tokenParam = new URLSearchParams(rawQuery).get('token');
-  const b64cookiesParam = new URLSearchParams(rawQuery).get('b64cookies');
-  const b64uaParam = new URLSearchParams(rawQuery).get('b64ua'); // v97: WebView UA
-
-  console.log('[Relay] videoId:', videoIdParam || 'none', 'b64url:', !!b64urlParam, 'b64cookies:', !!b64cookiesParam, 'b64ua:', !!b64uaParam);
-
-  if (!tokenParam) return reply.status(401).send({ error: 'Token required' });
-  try {
-    fastify.jwt.verify(tokenParam);
-  } catch {
-    return reply.status(401).send({ error: 'Invalid token' });
-  }
-
-  // v96: Decode cookies from base64 (sent by iOS ExtractionBridge)
-  let cookieHeader = '';
-  if (b64cookiesParam) {
-    try {
-      cookieHeader = Buffer.from(b64cookiesParam, 'base64').toString('utf-8');
-      console.log('[Relay] ✅ Decoded cookies, length:', cookieHeader.length);
-    } catch {
-      console.log('[Relay] ⚠️ Failed to decode cookies');
-    }
-  }
-
-  // v97: Decode User-Agent from base64 (sent by iOS — the UA that the WebView
-  // used to extract the stream URL). Forwarding the SAME UA to YouTube CDN
-  // is critical: YouTube validates UA consistency between page-load (extraction)
-  // and media-fetch. If we sent a desktop UA here, YouTube would 403.
-  let userAgent = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) ' +
-                  'AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 ' +
-                  'Mobile/15E148 Safari/604.1';
-  if (b64uaParam) {
-    try {
-      userAgent = Buffer.from(b64uaParam, 'base64').toString('utf-8');
-      console.log('[Relay] ✅ Decoded User-Agent, len:', userAgent.length);
-    } catch {
-      console.log('[Relay] ⚠️ Failed to decode User-Agent, using default iPhone UA');
-    }
-  }
-
-  // Determine target URL
-  let targetUrl: string | null = null;
-
-  // ═══════════════════════════════════════════════════════════════════════
-  // Mode 1 (PRIMARY, v100): videoId + cookies + UA — Authenticated Server Extract
-  // ═══════════════════════════════════════════════════════════════════════
-  // Backend POSTs to /youtubei/v1/player with IOS client + iPhone cookies + UA.
-  // YouTube returns URL bound to BACKEND IP. Backend fetches it (same IP) → 200.
-  // This is the WORKING path — extraction-IP == streaming-IP.
-  if (videoIdParam) {
-    const cached = urlCache.get(videoIdParam);
-    if (cached && cached.expires > Date.now()) {
-      targetUrl = cached.url;
-      console.log('[Relay] ✅ Using cached URL for videoId:', videoIdParam);
-    } else {
-      try {
-        console.log('[Relay] v100: authenticated extraction for videoId:', videoIdParam);
-        // v100: try authenticated IOS innertube FIRST (works with iPhone cookies)
-        try {
-          targetUrl = await extractStreamURLAuthenticated(videoIdParam, cookieHeader, userAgent);
-          urlCache.set(videoIdParam, { url: targetUrl, expires: Date.now() + 300000 });
-          console.log('[Relay] ✅ v100 authenticated extraction succeeded + cached');
-        } catch (authErr: any) {
-          // v100 fallback: legacy yt-dlp/Piped extraction (likely fails on Railway)
-          console.warn('[Relay] ⚠️ v100 authenticated failed:', authErr.message);
-          console.log('[Relay] Falling back to legacy extractStreamURL (yt-dlp/Piped)...');
-          targetUrl = await extractStreamURL(videoIdParam);
-          urlCache.set(videoIdParam, { url: targetUrl, expires: Date.now() + 300000 });
-          console.log('[Relay] ✅ Legacy extraction succeeded + cached');
-        }
-      } catch (e: any) {
-        console.error('[Relay] ❌ All extraction methods failed:', e.message);
-        return reply.status(502).send({ error: 'Extraction failed: ' + e.message });
-      }
-    }
-  }
-  // ═══════════════════════════════════════════════════════════════════════
-  // Mode 2 (FALLBACK, v97): b64url — Transparent Proxy.
-  // ═══════════════════════════════════════════════════════════════════════
-  // iOS extracted the googlevideo URL; backend strips `ip` and forwards with
-  // iPhone UA + cookies. KNOWN BROKEN: stripping `ip` breaks signature → 403.
-  // Kept as fallback for cases where iOS has URL but no videoId.
-  else if (b64urlParam) {
-    try {
-      const decoded = Buffer.from(b64urlParam, 'base64').toString('utf-8');
-
-      // Strip the `ip` query parameter (v97 logic — known to break signature)
-      let cleaned = decoded.replace(/&amp;/g, '&');
-      cleaned = cleaned.replace(/[&?]ip=[^&]+/g, '');
-      if (!cleaned.includes('?')) {
-        const firstAmp = cleaned.indexOf('&');
-        if (firstAmp !== -1) {
-          cleaned = cleaned.substring(0, firstAmp) + '?' + cleaned.substring(firstAmp + 1);
-        }
-      }
-      cleaned = cleaned.replace(/&&/g, '&').replace(/[?&]$/, '');
-
-      targetUrl = cleaned;
-      console.log('[Relay] ⚠️ v97 transparent-proxy fallback (will likely 403): decoded + stripped `ip`');
-      console.log('[Relay] Before:', decoded.substring(0, 160));
-      console.log('[Relay] After: ', cleaned.substring(0, 160));
-    } catch {
-      return reply.status(400).send({ error: 'Invalid base64' });
-    }
-  }
-  // Mode 3 (LEGACY): raw url — pass-through without modification.
-  else if (urlParam) {
-    targetUrl = urlParam;
-  } else {
-    return reply.status(400).send({ error: 'videoId, b64url, or url required' });
-  }
-
-  if (!targetUrl) {
-    return reply.status(500).send({ error: 'No stream URL' });
-  }
-
-  console.log('[Relay] Target:', targetUrl.substring(0, 100) + '...');
+  const { b64url, token } = request.query as { b64url?: string; token?: string };
+  if (!token) return reply.status(401).send({ error: 'Token required' });
+  try { fastify.jwt.verify(token); }
+  catch { return reply.status(401).send({ error: 'Invalid token' }); }
+  if (!b64url) return reply.status(400).send({ error: 'b64url required' });
 
   try {
-    // v97: Forward iPhone UA (from iOS WebView) + cookies + Referer to YouTube CDN.
-    // This makes the backend look like the iPhone itself — YouTube can't
-    // distinguish the proxy request from the original extraction request.
-    const upstreamHeaders: Record<string, string> = {
-      'User-Agent': userAgent,
-      'Referer': 'https://www.youtube.com/',
-      'Origin': 'https://www.youtube.com',
-    };
-    // v96: Add cookies from client (Authenticated Proxy)
-    if (cookieHeader) {
-      upstreamHeaders['Cookie'] = cookieHeader;
-      console.log('[Relay] ✅ Sending cookies to YouTube CDN');
+    const manifestURL = assertTrustedHlsUrl(decodeBase64Strict(b64url));
+    const upstream = await fetchTrustedManifest(manifestURL);
+    if (!upstream.ok) {
+      return reply.status(502).send({ error: `Manifest upstream ${upstream.status}` });
     }
-    if (request.headers.range) upstreamHeaders['Range'] = request.headers.range;
-
-    console.log('[Relay] Fetching from YouTube CDN with iPhone UA + cookies...');
-    const upstreamRes = await fetch(targetUrl, { headers: upstreamHeaders, redirect: 'follow' });
-
-    console.log('[Relay] Upstream status:', upstreamRes.status, 'Content-Length:', upstreamRes.headers.get('content-length'));
-
-    if (!upstreamRes.ok && upstreamRes.status !== 206) {
-      const errorBody = await upstreamRes.text().catch(() => 'unreadable');
-      console.error('[Relay] ❌ Upstream error:', upstreamRes.status, errorBody.substring(0, 200));
-      // If 403, invalidate cache (URL may be expired/IP-bound)
-      if (upstreamRes.status === 403 && videoIdParam) {
-        urlCache.delete(videoIdParam);
-        console.log('[Relay] Cache invalidated for videoId:', videoIdParam);
-      }
-      return reply.status(upstreamRes.status).send({ error: `YouTube ${upstreamRes.status}` });
+    const type = upstream.headers.get('content-type')?.toLowerCase() ?? '';
+    if (!type.includes('mpegurl') && !type.includes('application/vnd.apple')) {
+      return reply.status(502).send({ error: 'Upstream is not an HLS manifest' });
     }
-
-    if (upstreamRes.body) {
-      const nodeStream = Readable.fromWeb(upstreamRes.body);
-      reply.hijack();
-      const raw = reply.raw;
-      const respHeaders: Record<string, string> = {
-        'Content-Type': upstreamRes.headers.get('content-type') || 'video/mp4',
-        'Accept-Ranges': 'bytes',
-      };
-      const cl = upstreamRes.headers.get('content-length');
-      if (cl) respHeaders['Content-Length'] = cl;
-      const cr = upstreamRes.headers.get('content-range');
-      if (cr) respHeaders['Content-Range'] = cr;
-      raw.writeHead(upstreamRes.status, respHeaders);
-
-      pipeline(nodeStream, raw, (err: any) => {
-        if (err) {
-          console.error('[Relay] ❌ Pipeline error:', err.message);
-          if (!raw.destroyed) raw.destroy();
-        } else {
-          console.log('[Relay] ✅ Pipeline complete');
-        }
-      });
-      return;
-    } else {
-      return reply.send(Buffer.alloc(0));
+    const body = await upstream.arrayBuffer();
+    if (body.byteLength > 2_000_000) {
+      return reply.status(502).send({ error: 'Manifest too large' });
     }
-  } catch (e: any) {
-    console.error('[Relay] ❌ Error:', e.message);
-    return reply.status(502).send({ error: 'Stream relay failed: ' + e.message });
+    reply.type(type || 'application/vnd.apple.mpegurl');
+    return reply.send(Buffer.from(body));
+  } catch (error: any) {
+    request.log.warn({ message: error.message }, 'Rejected media relay request');
+    return reply.status(400).send({ error: error.message || 'Invalid relay request' });
   }
 });
+
 
 // 404 RADAR
 fastify.setNotFoundHandler((request: any, reply: any) => {
