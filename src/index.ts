@@ -71,10 +71,73 @@ fastify.decorate('authenticate', authenticate);
 fastify.addHook('onRequest', securityHeaders);
 
 // ═══════════════════════════════════════════════════════════════════════════
-// v94.14: StreamRelay — /api/media/stream
-// Registered in ROOT scope with ABSOLUTE path /api/media/stream.
-// This is BEFORE any fastify.register() calls — no prefix encapsulation.
+// v95: Server-Side Extraction + StreamRelay
+// AVPlayer sends: GET /api/media/stream?videoId=ID&token=JWT
+// Backend extracts googlevideo URL (server IP = extraction IP = streaming IP)
+// then pipes bytes to AVPlayer. NO IP mismatch → NO 403.
+// Also supports b64url/url for backward compat.
 // ═══════════════════════════════════════════════════════════════════════════
+const PIPED_INSTANCES = [
+  'https://pipedapi.kavin.rocks',
+  'https://pipedapi.leptons.xyz',
+  'https://pipedapi.r4fo.com',
+];
+
+async function extractStreamURL(videoId: string): Promise<string> {
+  // Try Piped API first (fastest)
+  for (const instance of PIPED_INSTANCES) {
+    try {
+      console.log('[Extract] Trying Piped:', instance);
+      const res = await fetch(`${instance}/streams/${videoId}`, {
+        signal: AbortSignal.timeout(8000),
+      });
+      if (!res.ok) continue;
+      const data: any = await res.json();
+
+      // Priority 1: muxed MP4 (itag 22=720p, 18=360p)
+      if (data.videoStreams && Array.isArray(data.videoStreams)) {
+        const muxed = data.videoStreams.filter((s: any) => !s.videoOnly);
+        const best = muxed.find((s: any) => s.itag === 22)
+                   || muxed.find((s: any) => s.itag === 18)
+                   || muxed[0];
+        if (best && best.url) {
+          console.log('[Extract] ✅ Piped muxed MP4 itag:', best.itag);
+          return best.url;
+        }
+      }
+
+      // Priority 2: HLS
+      if (data.hls) {
+        console.log('[Extract] ✅ Piped HLS');
+        return data.hls;
+      }
+    } catch (e: any) {
+      console.log('[Extract] Piped failed:', e.message);
+    }
+  }
+
+  // Fallback: yt-dlp (if available on Railway)
+  try {
+    console.log('[Extract] Trying yt-dlp...');
+    const { execSync } = await import('child_process');
+    const output = execSync(
+      `yt-dlp -f "best[ext=mp4][vcodec!=none][acodec!=none]/best[vcodec!=none][acodec!=none]" -g "https://www.youtube.com/watch?v=${videoId}"`,
+      { timeout: 15000, encoding: 'utf-8' }
+    ).trim();
+    if (output && output.includes('http')) {
+      console.log('[Extract] ✅ yt-dlp URL:', output.substring(0, 80));
+      return output;
+    }
+  } catch (e: any) {
+    console.log('[Extract] yt-dlp failed:', e.message?.substring(0, 100));
+  }
+
+  throw new Error('All extraction methods failed');
+}
+
+// Cache for extracted URLs (5 min TTL — googlevideo URLs live ~6h)
+const urlCache = new Map<string, { url: string; expires: number }>();
+
 fastify.get('/api/media/stream', {
   config: { rateLimit: { max: 60, timeWindow: '1 minute' } }
 }, async (request: any, reply: any) => {
@@ -89,40 +152,64 @@ fastify.get('/api/media/stream', {
 
   // Parse raw query string
   const rawQuery = request.url.split('?')[1] || '';
+  const videoIdParam = new URLSearchParams(rawQuery).get('videoId');
   const b64urlParam = new URLSearchParams(rawQuery).get('b64url');
   const urlParam = new URLSearchParams(rawQuery).get('url');
   const tokenParam = new URLSearchParams(rawQuery).get('token');
 
-  console.log('[Relay] b64url found:', !!b64urlParam, 'len:', b64urlParam?.length || 0);
-
-  // Decode URL: prefer base64, fall back to raw
-  let targetUrl: string;
-  if (b64urlParam) {
-    try {
-      targetUrl = Buffer.from(b64urlParam, 'base64').toString('utf-8');
-      console.log('[Relay] ✅ Decoded base64 URL, length:', targetUrl.length);
-    } catch {
-      return reply.status(400).send({ error: 'Invalid base64' });
-    }
-  } else if (urlParam) {
-    targetUrl = urlParam;
-  } else {
-    return reply.status(400).send({ error: 'url or b64url required' });
-  }
+  console.log('[Relay] videoId:', videoIdParam || 'none', 'b64url:', !!b64urlParam, 'url:', !!urlParam);
 
   if (!tokenParam) return reply.status(401).send({ error: 'Token required' });
   try {
     fastify.jwt.verify(tokenParam);
-    console.log('[Relay] ✅ Token verified');
   } catch {
     return reply.status(401).send({ error: 'Invalid token' });
   }
 
-  console.log('[Relay] Target:', targetUrl.substring(0, 100) + '...');
+  // Determine target URL
+  let targetUrl: string | null = null;
 
-  if (!targetUrl.includes('googlevideo.com') && !targetUrl.includes('.m3u8')) {
-    return reply.status(400).send({ error: 'Only googlevideo.com allowed' });
+  // Mode 1: videoId — server-side extraction (v95, solves IP mismatch)
+  if (videoIdParam) {
+    // Check cache
+    const cached = urlCache.get(videoIdParam);
+    if (cached && cached.expires > Date.now()) {
+      targetUrl = cached.url;
+      console.log('[Relay] ✅ Using cached URL for videoId:', videoIdParam);
+    } else {
+      try {
+        console.log('[Relay] Extracting stream URL for videoId:', videoIdParam);
+        targetUrl = await extractStreamURL(videoIdParam);
+        // Cache for 5 minutes
+        urlCache.set(videoIdParam, { url: targetUrl, expires: Date.now() + 300000 });
+        console.log('[Relay] ✅ Extracted + cached URL');
+      } catch (e: any) {
+        console.error('[Relay] ❌ Extraction failed:', e.message);
+        return reply.status(502).send({ error: 'Extraction failed: ' + e.message });
+      }
+    }
   }
+  // Mode 2: b64url (backward compat)
+  else if (b64urlParam) {
+    try {
+      targetUrl = Buffer.from(b64urlParam, 'base64').toString('utf-8');
+      console.log('[Relay] Decoded b64url, len:', targetUrl.length);
+    } catch {
+      return reply.status(400).send({ error: 'Invalid base64' });
+    }
+  }
+  // Mode 3: raw url (backward compat)
+  else if (urlParam) {
+    targetUrl = urlParam;
+  } else {
+    return reply.status(400).send({ error: 'videoId, b64url, or url required' });
+  }
+
+  if (!targetUrl) {
+    return reply.status(500).send({ error: 'No stream URL' });
+  }
+
+  console.log('[Relay] Target:', targetUrl.substring(0, 100) + '...');
 
   try {
     const upstreamHeaders: Record<string, string> = {
@@ -140,6 +227,11 @@ fastify.get('/api/media/stream', {
     if (!upstreamRes.ok && upstreamRes.status !== 206) {
       const errorBody = await upstreamRes.text().catch(() => 'unreadable');
       console.error('[Relay] ❌ Upstream error:', upstreamRes.status, errorBody.substring(0, 200));
+      // If 403, invalidate cache (URL may be expired/IP-bound)
+      if (upstreamRes.status === 403 && videoIdParam) {
+        urlCache.delete(videoIdParam);
+        console.log('[Relay] Cache invalidated for videoId:', videoIdParam);
+      }
       return reply.status(upstreamRes.status).send({ error: `YouTube ${upstreamRes.status}` });
     }
 
