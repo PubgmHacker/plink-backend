@@ -7,8 +7,10 @@
   },
   "scripts": {
     "dev": "tsx watch src/index.ts",
-    "start": "npx prisma generate && npx prisma db push && echo 'PRISMA_DB_PUSH_DONE' && npx tsx src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "npx prisma migrate deploy && node dist/index.js",
     "test": "vitest",
+    "test:ci": "vitest run --coverage",
     "test:coverage": "vitest run --coverage",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",

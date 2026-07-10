@@ -1,9 +1,0 @@
-// Этот файл должен быть УДАЛЁН из проекта.
-// Pack 8: убирает stub-версию RoomsViewFixed — она конфликтует
-// с оригинальным RoomsTabContent внутри MainTabView.swift.
-//
-// Команда удаления:
-//   rm Plink/Views/Home/RoomsViewFixed.swift
-//
-// Оригинальный RoomsTabContent (с под-вкладками Общие/Мои/Войти/Запросы)
-// уже находится в MainTabView.swift — его и нужно использовать.
