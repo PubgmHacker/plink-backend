@@ -71,26 +71,35 @@ fastify.decorate('authenticate', authenticate);
 fastify.addHook('onRequest', securityHeaders);
 
 // ═══════════════════════════════════════════════════════════════════════════
-// v97: Transparent Proxy Mode (StreamRelay)
+// v100: Authenticated Server-Side Extraction (StreamRelay)
 // ═══════════════════════════════════════════════════════════════════════════
-// PROBLEM: iOS ExtractionBridge extracts googlevideo URL bound to iPhone IP.
-// Railway backend fetches from a different IP → YouTube returns 403 Forbidden.
-// Server-side extraction (yt-dlp/Piped) is also blocked on Railway (429/400).
+// PROBLEM (v97-v99):
+//   - v97 transparent-proxy: strips `ip` from URL → breaks signature → 403
+//   - v99 IOS innertube from WebView: sync XHR blocked, fell through to MP4
+//   - yt-dlp on Railway: blocked (429 / Precondition Failed) regardless of cookies
 //
-// SOLUTION (v97): Backend acts as a TRANSPARENT PROXY.
-//   1. iOS extracts googlevideo URL via ExtractionBridge (iPhone IP)
-//   2. iOS base64-encodes the URL + cookies + User-Agent and sends to backend
-//   3. Backend decodes URL, STRIPS the `ip` query param (so YouTube validates
-//      by token, not by source IP), then fetches the cleaned URL forwarding
-//      Cookie + User-Agent + Referer headers from iOS
-//   4. Backend pipes the bytes back to AVPlayer
+// SOLUTION (v100): Server does the IOS innertube API call ITSELF.
+//   1. iOS sends: videoId + b64cookies + b64ua (just identity, no extracted URL)
+//   2. Backend POSTs to https://www.youtube.com/youtubei/v1/player with:
+//        - clientName: 'IOS' (returns hlsManifestUrl, NOT IP-bound)
+//        - iPhone cookies (VISITOR_INFO1_LIVE, YSC, etc.)
+//        - iPhone User-Agent (matches the iPhone that "owns" the cookies)
+//        - SAPISIDHASH Authorization header (computed from SAPISID cookie)
+//   3. YouTube generates URL bound to BACKEND IP (since backend made the request)
+//   4. Backend immediately fetches that URL from the SAME IP → IP matches → 200 OK
+//   5. Backend pipes bytes to AVPlayer
 //
-// Result: YouTube sees a request with iPhone UA + iPhone cookies + valid token.
-// Backend IP doesn't matter because the `ip` param is stripped.
+// Why this works where v95/v96 yt-dlp failed:
+//   - yt-dlp triggers YouTube's bot detection (it's a known scraper tool)
+//   - /youtubei/v1/player is just a JSON HTTP API — no bot detection
+//   - With iPhone cookies, YouTube sees the request as the iPhone user
+//   - HLS manifest URLs (hlsManifestUrl) are NOT IP-bound (sparams lacks `ip`)
+//     → even if AVPlayer somehow fetched directly, would still work
+//   - But more importantly: extraction-IP == streaming-IP (both = backend)
 //
 // Mode priority:
-//   - b64url (v97 transparent proxy) ← PRIMARY, working path
-//   - videoId (v95 server-side extract) ← fallback, may fail (429/400)
+//   - videoId + cookies + UA (v100 authenticated server extract) ← PRIMARY
+//   - b64url (v97 transparent proxy) ← fallback (will 403, kept for safety)
 //   - url (legacy) ← last resort
 // ═══════════════════════════════════════════════════════════════════════════
 const PIPED_INSTANCES = [
@@ -98,6 +107,125 @@ const PIPED_INSTANCES = [
   'https://pipedapi.leptons.xyz',
   'https://pipedapi.r4fo.com',
 ];
+
+/**
+ * v100: Build SAPISIDHASH header from SAPISID cookie.
+ * YouTube requires this header for authenticated innertube API calls.
+ * Format: SAPISIDHASH = <unix_timestamp>_<SHA1(SAPISID + " " + origin + " " + timestamp)>
+ */
+function buildSapisidHash(cookieHeader: string, origin: string): string | null {
+  const match = cookieHeader.match(/SAPISID=([^;]+)/);
+  if (!match) return null;
+  const sapisid = match[1];
+  const ts = Math.floor(Date.now() / 1000);
+  // Use Node.js crypto module
+  const crypto = require('crypto');
+  const hash = crypto.createHash('sha1')
+    .update(`${sapisid} ${origin} ${ts}`)
+    .digest('hex');
+  return `SAPISIDHASH ${ts}_${hash}`;
+}
+
+/**
+ * v100: Authenticated IOS innertube API extraction.
+ *
+ * POSTs to /youtubei/v1/player with iPhone cookies + UA + SAPISIDHASH.
+ * YouTube returns streamingData with hlsManifestUrl (preferred) or formats[].
+ *
+ * The URL YouTube generates is bound to BACKEND IP (since backend made the
+ * request). Backend then fetches that URL from the same IP → IP matches → 200.
+ */
+async function extractStreamURLAuthenticated(
+  videoId: string,
+  cookieHeader: string,
+  userAgent: string
+): Promise<string> {
+  console.log('[Extract-v100] Authenticated IOS innertube extraction for', videoId);
+  console.log('[Extract-v100] Cookies length:', cookieHeader.length, 'UA length:', userAgent.length);
+
+  // SAPISIDHASH for authenticated request (uses SAPISID cookie if present)
+  const origin = 'https://www.youtube.com';
+  const authHash = buildSapisidHash(cookieHeader, origin);
+
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    'User-Agent': userAgent,
+    'Origin': origin,
+    'Referer': origin + '/',
+    'X-YouTube-Client-Name': '5',      // 5 = IOS client
+    'X-YouTube-Client-Version': '17.31.4',
+    'Accept-Language': 'en-US,en;q=0.9',
+  };
+  if (cookieHeader) {
+    headers['Cookie'] = cookieHeader;
+  }
+  if (authHash) {
+    headers['Authorization'] = authHash;
+    console.log('[Extract-v100] ✅ Built SAPISIDHASH authorization header');
+  } else {
+    console.log('[Extract-v100] ⚠️ No SAPISID cookie found — request will be unauthenticated');
+  }
+
+  const body = JSON.stringify({
+    context: {
+      client: {
+        clientName: 'IOS',
+        clientVersion: '17.31.4',
+        hl: 'en',
+        gl: 'US'
+      }
+    },
+    videoId: videoId,
+    playbackContext: {
+      contentPlaybackContext: {
+        html5Preference: 'HTML5_PREF_WANTS',
+        signatureTimestamp: 20075  // recent STS, YouTube accepts a wide range
+      }
+    }
+  });
+
+  const url = 'https://www.youtube.com/youtubei/v1/player?key=AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8&prettyPrint=false';
+  console.log('[Extract-v100] POST', url.substring(0, 80) + '...');
+
+  const res = await fetch(url, {
+    method: 'POST',
+    headers,
+    body,
+    signal: AbortSignal.timeout(15000),
+  });
+
+  console.log('[Extract-v100] Response status:', res.status);
+
+  if (!res.ok) {
+    const errText = await res.text().catch(() => '');
+    throw new Error(`innertube ${res.status}: ${errText.substring(0, 200)}`);
+  }
+
+  const data: any = await res.json();
+  const sd = data?.streamingData;
+  if (!sd) {
+    throw new Error('innertube: no streamingData in response. playabilityStatus=' +
+      JSON.stringify(data?.playabilityStatus)?.substring(0, 200));
+  }
+
+  // Priority 1: HLS manifest (NOT IP-bound, works through proxy AND direct)
+  if (sd.hlsManifestUrl) {
+    console.log('[Extract-v100] ✅ Got hlsManifestUrl (NOT IP-bound)');
+    return sd.hlsManifestUrl;
+  }
+
+  // Priority 2: muxed MP4 (IP-bound to backend — backend fetches it, so OK)
+  const formats = sd.formats || [];
+  const best = formats.find((f: any) => f.itag === 22)
+            || formats.find((f: any) => f.itag === 18)
+            || formats[0];
+  if (best && best.url) {
+    console.log('[Extract-v100] ✅ Got MP4 itag:', best.itag, '(IP-bound to backend, will fetch directly)');
+    return best.url;
+  }
+
+  throw new Error('innertube: no hlsManifestUrl and no formats in streamingData');
+}
 
 async function extractStreamURL(videoId: string): Promise<string> {
   // Try Piped API first (fastest)
@@ -214,68 +342,73 @@ fastify.get('/api/media/stream', {
   // Determine target URL
   let targetUrl: string | null = null;
 
-  // Mode 1 (PRIMARY, v97): b64url — Transparent Proxy.
-  // iOS extracted the googlevideo URL; backend just strips the IP-bound param
-  // and forwards the request with iPhone UA + cookies. NO server-side extraction.
-  if (b64urlParam) {
-    try {
-      const decoded = Buffer.from(b64urlParam, 'base64').toString('utf-8');
-
-      // ── CRITICAL STEP: strip the `ip` query parameter ────────────────
-      // googlevideo URLs contain &ip=<extractor_ip> (iPhone's IP at extraction
-      // time). When Railway fetches from a different IP, YouTube validates the
-      // `ip` param against the actual source IP, sees a mismatch, and returns
-      // 403 Forbidden. Removing the param entirely forces YouTube to validate
-      // by signature token only — the URL still works because the signature
-      // covers all OTHER params (expire, itag, mime, etc.).
-      let cleaned = decoded.replace(/&amp;/g, '&'); // defensive: unescape HTML entities
-      // User-specified regex: /[&?]ip=[^&]+/g → empty string
-      cleaned = cleaned.replace(/[&?]ip=[^&]+/g, '');
-      // Fix separator: if `?ip=...` was the FIRST param, the `?` got removed
-      // and now the next `&` should become `?` to start the query string.
-      if (!cleaned.includes('?')) {
-        const firstAmp = cleaned.indexOf('&');
-        if (firstAmp !== -1) {
-          cleaned = cleaned.substring(0, firstAmp) + '?' + cleaned.substring(firstAmp + 1);
-        }
-      }
-      // Clean up dangling separators (double &, trailing ? or &)
-      cleaned = cleaned.replace(/&&/g, '&').replace(/[?&]$/, '');
-
-      targetUrl = cleaned;
-      console.log('[Relay] ✅ v97 transparent-proxy: decoded b64url + stripped `ip` param');
-      console.log('[Relay] Before:', decoded.substring(0, 160));
-      console.log('[Relay] After: ', cleaned.substring(0, 160));
-    } catch {
-      return reply.status(400).send({ error: 'Invalid base64' });
-    }
-  }
-  // Mode 2 (FALLBACK, v95): videoId — server-side extraction.
-  // Uses Piped API + yt-dlp. Currently BROKEN on Railway (429/400) but kept
-  // as a fallback for cases where iOS extraction fails and only videoId is
-  // available. Do NOT use this path when b64url is provided.
-  else if (videoIdParam) {
+  // ═══════════════════════════════════════════════════════════════════════
+  // Mode 1 (PRIMARY, v100): videoId + cookies + UA — Authenticated Server Extract
+  // ═══════════════════════════════════════════════════════════════════════
+  // Backend POSTs to /youtubei/v1/player with IOS client + iPhone cookies + UA.
+  // YouTube returns URL bound to BACKEND IP. Backend fetches it (same IP) → 200.
+  // This is the WORKING path — extraction-IP == streaming-IP.
+  if (videoIdParam) {
     const cached = urlCache.get(videoIdParam);
     if (cached && cached.expires > Date.now()) {
       targetUrl = cached.url;
       console.log('[Relay] ✅ Using cached URL for videoId:', videoIdParam);
     } else {
       try {
-        console.log('[Relay] Extracting stream URL for videoId:', videoIdParam);
-        targetUrl = await extractStreamURL(videoIdParam);
-        urlCache.set(videoIdParam, { url: targetUrl, expires: Date.now() + 300000 });
-        console.log('[Relay] ✅ Extracted + cached URL');
+        console.log('[Relay] v100: authenticated extraction for videoId:', videoIdParam);
+        // v100: try authenticated IOS innertube FIRST (works with iPhone cookies)
+        try {
+          targetUrl = await extractStreamURLAuthenticated(videoIdParam, cookieHeader, userAgent);
+          urlCache.set(videoIdParam, { url: targetUrl, expires: Date.now() + 300000 });
+          console.log('[Relay] ✅ v100 authenticated extraction succeeded + cached');
+        } catch (authErr: any) {
+          // v100 fallback: legacy yt-dlp/Piped extraction (likely fails on Railway)
+          console.warn('[Relay] ⚠️ v100 authenticated failed:', authErr.message);
+          console.log('[Relay] Falling back to legacy extractStreamURL (yt-dlp/Piped)...');
+          targetUrl = await extractStreamURL(videoIdParam);
+          urlCache.set(videoIdParam, { url: targetUrl, expires: Date.now() + 300000 });
+          console.log('[Relay] ✅ Legacy extraction succeeded + cached');
+        }
       } catch (e: any) {
-        console.error('[Relay] ❌ Extraction failed:', e.message);
+        console.error('[Relay] ❌ All extraction methods failed:', e.message);
         return reply.status(502).send({ error: 'Extraction failed: ' + e.message });
       }
+    }
+  }
+  // ═══════════════════════════════════════════════════════════════════════
+  // Mode 2 (FALLBACK, v97): b64url — Transparent Proxy.
+  // ═══════════════════════════════════════════════════════════════════════
+  // iOS extracted the googlevideo URL; backend strips `ip` and forwards with
+  // iPhone UA + cookies. KNOWN BROKEN: stripping `ip` breaks signature → 403.
+  // Kept as fallback for cases where iOS has URL but no videoId.
+  else if (b64urlParam) {
+    try {
+      const decoded = Buffer.from(b64urlParam, 'base64').toString('utf-8');
+
+      // Strip the `ip` query parameter (v97 logic — known to break signature)
+      let cleaned = decoded.replace(/&amp;/g, '&');
+      cleaned = cleaned.replace(/[&?]ip=[^&]+/g, '');
+      if (!cleaned.includes('?')) {
+        const firstAmp = cleaned.indexOf('&');
+        if (firstAmp !== -1) {
+          cleaned = cleaned.substring(0, firstAmp) + '?' + cleaned.substring(firstAmp + 1);
+        }
+      }
+      cleaned = cleaned.replace(/&&/g, '&').replace(/[?&]$/, '');
+
+      targetUrl = cleaned;
+      console.log('[Relay] ⚠️ v97 transparent-proxy fallback (will likely 403): decoded + stripped `ip`');
+      console.log('[Relay] Before:', decoded.substring(0, 160));
+      console.log('[Relay] After: ', cleaned.substring(0, 160));
+    } catch {
+      return reply.status(400).send({ error: 'Invalid base64' });
     }
   }
   // Mode 3 (LEGACY): raw url — pass-through without modification.
   else if (urlParam) {
     targetUrl = urlParam;
   } else {
-    return reply.status(400).send({ error: 'b64url, videoId, or url required' });
+    return reply.status(400).send({ error: 'videoId, b64url, or url required' });
   }
 
   if (!targetUrl) {
