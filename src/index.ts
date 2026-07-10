@@ -7,12 +7,14 @@ import websocket from '@fastify/websocket';
 import * as Sentry from '@sentry/node';
 import { config } from './config/index.js';
 import { prisma } from './config/db.js';
-import { checkRedis } from './config/redis.js';
+import { checkRedis, redis } from './config/redis.js';
 import { authenticate } from './middleware/auth.js';
 import { securityHeaders } from './middleware/security.js';
 import { setupWebSocketHandler } from './websocket/ws-handler.js';
 import { register } from './services/metrics.js';
 import { initTelemetry } from './services/telemetry.js';
+import { RoomEventService } from './services/roomEventService.js';
+import { RelayTicketService } from './services/relayTicketService.js';
 import authRoutes from './routes/auth.js';
 import roomRoutes from './routes/rooms.js';
 import friendRoutes from './routes/friends.js';
@@ -23,6 +25,7 @@ import billingRoutes from './routes/billing.js';
 import gdprRoutes from './routes/gdpr.js';
 import featureFlagRoutes from './routes/featureFlags.js';
 import aiRoutes from './routes/ai.js';  // ← Pack 6
+import relayRoutes from './routes/relay.js';  // ← Protocol v2 (Rewrite V2)
 import { alertCritical } from './utils/alerting.js';
 
 initTelemetry(process.env.OTEL_ENDPOINT);
@@ -67,6 +70,29 @@ await fastify.register(websocket, { options: { maxPayload: 1048576 } });
 
 fastify.decorate('authenticate', authenticate);
 fastify.addHook('onRequest', securityHeaders);
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Protocol v2 (Rewrite V2): RoomEventService + RelayTicketService
+// ═══════════════════════════════════════════════════════════════════════════
+// Canonical P0: v2 endpoints REQUIRE Redis (no graceful fallback). If Redis
+// is unavailable, the services are NOT decorated — `/health/ready` returns
+// 503, and any v2 route that touches `fastify.roomEvents` /
+// `fastify.relayTickets` will throw at runtime (intentional: fail loud
+// rather than silently dropping pub/sub events or relay tickets).
+//
+// The pub/sub subscriber connection is a DUPLICATE of the command
+// connection — ioredis cannot subscribe and issue commands safely on the
+// same connection.
+let roomEvents: RoomEventService | null = null;
+let relayTickets: RelayTicketService | null = null;
+if (redis) {
+  const subscriber = redis.duplicate();
+  roomEvents = new RoomEventService(redis, subscriber);
+  relayTickets = new RelayTicketService(redis);
+  fastify.decorate('redis', redis);
+  fastify.decorate('roomEvents', roomEvents);
+  fastify.decorate('relayTickets', relayTickets);
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // v104: HLS-only Safe Relay (StreamRelay)
@@ -197,6 +223,7 @@ await fastify.register(billingRoutes, { prefix: '/api' });
 await fastify.register(gdprRoutes, { prefix: '/api' });
 await fastify.register(featureFlagRoutes, { prefix: '/api' });
 await fastify.register(aiRoutes, { prefix: '/api' });  // ← Pack 6
+await fastify.register(relayRoutes, { prefix: '/api' });  // ← Protocol v2 (Rewrite V2)
 
 setupWebSocketHandler(fastify.websocketServer, prisma, fastify);
 
@@ -228,6 +255,32 @@ fastify.get('/health', async () => {
     },
     memory: process.memoryUsage(),
   };
+});
+
+// Protocol v2 readiness probe — distinct from /health (liveness).
+// /health/ready returns 503 when Protocol v2 services are not wired (Redis
+// unavailable). Canonical P0: v2 endpoints REQUIRE Redis — no fallback.
+fastify.get('/health/ready', async (_req: any, reply: any) => {
+  if (!roomEvents || !relayTickets) {
+    return reply.status(503).send({
+      status: 'not_ready',
+      reason: 'redis_unavailable',
+      timestamp: Date.now(),
+    });
+  }
+  const redisUp = await checkRedis();
+  if (!redisUp) {
+    return reply.status(503).send({
+      status: 'not_ready',
+      reason: 'redis_ping_failed',
+      timestamp: Date.now(),
+    });
+  }
+  return reply.send({
+    status: 'ready',
+    timestamp: Date.now(),
+    uptime: process.uptime(),
+  });
 });
 
 fastify.get('/metrics', async (req, reply) => {
