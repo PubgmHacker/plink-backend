@@ -24,6 +24,8 @@ import gdprRoutes from './routes/gdpr.js';
 import featureFlagRoutes from './routes/featureFlags.js';
 import aiRoutes from './routes/ai.js';  // ← Pack 6
 import { alertCritical } from './utils/alerting.js';
+import { pipeline } from 'node:stream';
+import { Readable } from 'node:stream';
 
 initTelemetry(process.env.OTEL_ENDPOINT);
 
@@ -67,6 +69,117 @@ await fastify.register(websocket, { options: { maxPayload: 1048576 } });
 
 fastify.decorate('authenticate', authenticate);
 fastify.addHook('onRequest', securityHeaders);
+
+// ═══════════════════════════════════════════════════════════════════════════
+// v94.14: StreamRelay — /api/media/stream
+// Registered in ROOT scope with ABSOLUTE path /api/media/stream.
+// This is BEFORE any fastify.register() calls — no prefix encapsulation.
+// ═══════════════════════════════════════════════════════════════════════════
+fastify.get('/api/media/stream', {
+  config: { rateLimit: { max: 60, timeWindow: '1 minute' } }
+}, async (request: any, reply: any) => {
+  console.log('[Relay] ====== StreamRelay request received ======');
+
+  // Override security headers for AVPlayer
+  reply.header('Cross-Origin-Resource-Policy', 'cross-origin');
+  reply.header('Cross-Origin-Embedder-Policy', 'unsafe-none');
+  reply.header('Access-Control-Allow-Origin', '*');
+  reply.header('Access-Control-Allow-Headers', 'Range, Content-Type');
+  reply.header('Access-Control-Expose-Headers', 'Content-Range, Content-Length, Accept-Ranges');
+
+  // Parse raw query string
+  const rawQuery = request.url.split('?')[1] || '';
+  const b64urlParam = new URLSearchParams(rawQuery).get('b64url');
+  const urlParam = new URLSearchParams(rawQuery).get('url');
+  const tokenParam = new URLSearchParams(rawQuery).get('token');
+
+  console.log('[Relay] b64url found:', !!b64urlParam, 'len:', b64urlParam?.length || 0);
+
+  // Decode URL: prefer base64, fall back to raw
+  let targetUrl: string;
+  if (b64urlParam) {
+    try {
+      targetUrl = Buffer.from(b64urlParam, 'base64').toString('utf-8');
+      console.log('[Relay] ✅ Decoded base64 URL, length:', targetUrl.length);
+    } catch {
+      return reply.status(400).send({ error: 'Invalid base64' });
+    }
+  } else if (urlParam) {
+    targetUrl = urlParam;
+  } else {
+    return reply.status(400).send({ error: 'url or b64url required' });
+  }
+
+  if (!tokenParam) return reply.status(401).send({ error: 'Token required' });
+  try {
+    fastify.jwt.verify(tokenParam);
+    console.log('[Relay] ✅ Token verified');
+  } catch {
+    return reply.status(401).send({ error: 'Invalid token' });
+  }
+
+  console.log('[Relay] Target:', targetUrl.substring(0, 100) + '...');
+
+  if (!targetUrl.includes('googlevideo.com') && !targetUrl.includes('.m3u8')) {
+    return reply.status(400).send({ error: 'Only googlevideo.com allowed' });
+  }
+
+  try {
+    const upstreamHeaders: Record<string, string> = {
+      'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1',
+      'Referer': 'https://www.youtube.com/',
+      'Origin': 'https://www.youtube.com',
+    };
+    if (request.headers.range) upstreamHeaders['Range'] = request.headers.range;
+
+    console.log('[Relay] Fetching from YouTube CDN...');
+    const upstreamRes = await fetch(targetUrl, { headers: upstreamHeaders, redirect: 'follow' });
+
+    console.log('[Relay] Upstream status:', upstreamRes.status, 'Content-Length:', upstreamRes.headers.get('content-length'));
+
+    if (!upstreamRes.ok && upstreamRes.status !== 206) {
+      const errorBody = await upstreamRes.text().catch(() => 'unreadable');
+      console.error('[Relay] ❌ Upstream error:', upstreamRes.status, errorBody.substring(0, 200));
+      return reply.status(upstreamRes.status).send({ error: `YouTube ${upstreamRes.status}` });
+    }
+
+    if (upstreamRes.body) {
+      const nodeStream = Readable.fromWeb(upstreamRes.body);
+      reply.hijack();
+      const raw = reply.raw;
+      const respHeaders: Record<string, string> = {
+        'Content-Type': upstreamRes.headers.get('content-type') || 'video/mp4',
+        'Accept-Ranges': 'bytes',
+      };
+      const cl = upstreamRes.headers.get('content-length');
+      if (cl) respHeaders['Content-Length'] = cl;
+      const cr = upstreamRes.headers.get('content-range');
+      if (cr) respHeaders['Content-Range'] = cr;
+      raw.writeHead(upstreamRes.status, respHeaders);
+
+      pipeline(nodeStream, raw, (err: any) => {
+        if (err) {
+          console.error('[Relay] ❌ Pipeline error:', err.message);
+          if (!raw.destroyed) raw.destroy();
+        } else {
+          console.log('[Relay] ✅ Pipeline complete');
+        }
+      });
+      return;
+    } else {
+      return reply.send(Buffer.alloc(0));
+    }
+  } catch (e: any) {
+    console.error('[Relay] ❌ Error:', e.message);
+    return reply.status(502).send({ error: 'Stream relay failed: ' + e.message });
+  }
+});
+
+// 404 RADAR
+fastify.setNotFoundHandler((request: any, reply: any) => {
+  console.log(`[404 RADAR] Missed: ${request.method} ${request.url.substring(0, 200)}`);
+  reply.code(404).send({ error: 'Not Found' });
+});
 
 await fastify.register(authRoutes, { prefix: '/api' });
 await fastify.register(roomRoutes, { prefix: '/api' });
@@ -141,6 +254,11 @@ const start = async () => {
     await fastify.listen({ port: config.PORT, host: '0.0.0.0' });
     console.log(`🚀 Plink backend v1.6.0 on port ${config.PORT} [${config.NODE_ENV}]`);
     console.log(`🤖 AI: /api/ai/chat | /api/ai/recommend`);
+
+    // v94.14: Рентген роутов — выводим все зарегистрированные пути
+    await fastify.ready();
+    console.log('📋 REGISTERED ROUTES:');
+    console.log(fastify.printRoutes());
   } catch (err) {
     Sentry.captureException(err);
     await alertCritical('Backend failed to start', err as Error);
