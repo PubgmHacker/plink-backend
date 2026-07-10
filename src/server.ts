@@ -38,10 +38,13 @@ const start = async () => {
 
   const shutdown = async (signal: string) => {
     console.log(`\n${signal} received, shutting down...`);
-    try {
-      await gateway.shutdown();
-    } catch (e) {
-      console.error('gateway shutdown error:', e);
+    // P1-13: gateway may be null if Redis was unavailable
+    if (gateway) {
+      try {
+        await gateway.shutdown();
+      } catch (e) {
+        console.error('gateway shutdown error:', e);
+      }
     }
     await app.close();
     await prisma.$disconnect();

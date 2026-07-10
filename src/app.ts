@@ -38,7 +38,8 @@ import { legacyStreamRelayRoutes, shouldRegisterLegacyRelay } from './routes/leg
 
 export async function buildApp(): Promise<{
   app: FastifyInstance;
-  gateway: RealtimeGateway;
+  // P1-13: gateway is null when Redis is unavailable. Callers MUST handle null.
+  gateway: RealtimeGateway | null;
 }> {
   // §2: refuse to boot in production on weak secret / CORS '*' / no audiences
   assertProductionInvariants();
@@ -240,7 +241,7 @@ export async function buildApp(): Promise<{
     });
   });
 
-  return { app: fastify, gateway: gateway as RealtimeGateway };
+  return { app: fastify, gateway: gateway };  // P1-13: gateway is RealtimeGateway | null
 }
 
 async function checkDatabase(): Promise<boolean> {

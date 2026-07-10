@@ -1,8 +1,12 @@
-// src/realtime/roomEventBus.ts — Typed room event bus (Brain Review P0-3)
+// src/realtime/roomEventBus.ts — Typed room event bus (Brain Review P0-3 + P1-10)
 //
 // Distributes ALL room-scoped events across replicas, not just sync.state.
 // Used for: chat.broadcast, reaction.broadcast, participant.joined,
 // participant.left.
+//
+// P1-10 fix: incoming events are validated with Zod before dispatch. A
+// malformed event from a compromised publisher is dropped with a warning,
+// not cast blindly to RoomEvent.
 //
 // Each replica runs ONE subscriber per room it has local sockets in.
 // When a router on replica A wants to broadcast a chat message:
@@ -20,6 +24,7 @@
 
 import Redis from 'ioredis';
 import type { Redis as RedisType } from 'ioredis';
+import { z } from 'zod';
 
 export type RoomEvent =
   | {
@@ -57,6 +62,44 @@ export type RoomEvent =
 
 export type RoomEventListener = (event: RoomEvent) => void;
 
+// ── P1-10: Zod validation for incoming events ──────────────────────────
+// Any publisher with Redis access can send malformed events. Validate
+// before dispatch — don't trust JSON.parse(raw) as RoomEvent.
+const RoomEventSchema = z.discriminatedUnion('kind', [
+  z.object({
+    kind: z.literal('chat.broadcast'),
+    roomId: z.string().uuid(),
+    messageId: z.string().min(1),
+    clientMessageId: z.string().uuid().nullable(),
+    senderId: z.string().uuid(),
+    senderName: z.string().min(1).max(64),
+    text: z.string().min(1).max(2000),
+    createdAtMs: z.number().int(),
+  }),
+  z.object({
+    kind: z.literal('reaction.broadcast'),
+    roomId: z.string().uuid(),
+    userId: z.string().uuid(),
+    username: z.string().min(1).max(64),
+    emoji: z.string().min(1).max(32),
+    serverTimeMs: z.number().int(),
+  }),
+  z.object({
+    kind: z.literal('participant.joined'),
+    roomId: z.string().uuid(),
+    userId: z.string().uuid(),
+    username: z.string().min(1).max(64),
+    timestampMs: z.number().int(),
+  }),
+  z.object({
+    kind: z.literal('participant.left'),
+    roomId: z.string().uuid(),
+    userId: z.string().uuid(),
+    username: z.string().min(1).max(64),
+    timestampMs: z.number().int(),
+  }),
+]);
+
 export class RoomEventBus {
   private readonly subscriber: RedisType;
   private readonly publisher: RedisType;
@@ -82,10 +125,13 @@ export class RoomEventBus {
       const roomId = channel.substring('roomEvents:'.length);
       const set = this.listeners.get(roomId);
       if (!set || set.size === 0) return;
+      // P1-10: validate with Zod before dispatch
       let event: RoomEvent;
       try {
-        event = JSON.parse(raw) as RoomEvent;
-      } catch {
+        const parsed = JSON.parse(raw);
+        event = RoomEventSchema.parse(parsed) as RoomEvent;
+      } catch (err) {
+        console.warn('[RoomEventBus] dropped malformed event:', (err as Error).message);
         return;
       }
       for (const fn of set) {
