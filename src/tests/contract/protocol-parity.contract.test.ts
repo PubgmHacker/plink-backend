@@ -50,15 +50,13 @@ describe('Backend ↔ iOS contract parity (P0-17 regression)', () => {
         extraInSwift.push(t);
       }
     }
-    // server.draining is sent by gateway.shutdown() but not in
-    // ServerMessageSchema — it's an inline JSON. Allow this exception.
-    const allowedExtras = new Set(['server.draining']);
-    const unexpected = extraInSwift.filter((t) => !allowedExtras.has(t));
-    expect(unexpected).toEqual([]);
+    // P1-20: no more exceptions — server.draining is now in typed contract
+    expect(extraInSwift).toEqual([]);
   });
 
-  it('server.draining is in Swift decoder (P0-17)', () => {
+  it('server.draining is in Swift decoder and backend typed contract (P0-17 + P1-20)', () => {
     expect(SWIFT_HANDLED_TYPES.has('server.draining')).toBe(true);
+    expect(SERVER_MESSAGE_TYPES).toContain('server.draining');
   });
 
   it('reaction.broadcast is in Swift decoder (P0-17)', () => {

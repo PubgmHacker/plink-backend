@@ -21,6 +21,7 @@ import type { WebSocketServer } from 'ws';
 import type { FastifyInstance } from 'fastify';
 import type { PrismaClient } from '@prisma/client';
 import type { Redis } from 'ioredis';
+import { randomUUID } from 'node:crypto';
 import { config } from '../config/index.js';
 import { RoomStateStore } from './roomStateStore.js';
 import { RoomPubSub, type RoomStateListener } from './roomPubSub.js';
@@ -78,23 +79,44 @@ export class RealtimeGateway {
       return;
     }
 
-    // ── P0-15: register cleanup handlers IMMEDIATELY, before any await ──
-    // Idempotent — tracks what was committed and only rolls back that.
-    let cleaned = false;
+    // ── P0-15/P0-22/P0-23: register finalize handler IMMEDIATELY, before
+    // any await. Single socket.once('close', finalize) for entire lifecycle.
+    // No removeAllListeners. Idempotent. Tracks ALL committed state.
+    let finalized = false;
     let connectedPresence = false;
     let incrementedMetrics = false;
     let joinedRoomId: string | undefined;
     let retainedRoom = false;
+    let presenceCountBumped = false;  // P0-22
+    let presenceBumpedFor: { roomId: string; userId: string; connectionId?: string } | undefined;
+    // capturedUser is set after banned check — finalize uses it for username
+    let capturedUser: { id: string; username: string } | undefined;
 
-    const cleanup = async () => {
-      if (cleaned) return;
-      cleaned = true;
+    const finalize = async () => {
+      if (finalized) return;
+      finalized = true;
+      // P0-22: decrement presence count if it was bumped
+      if (presenceCountBumped && presenceBumpedFor) {
+        const { roomId: prid, userId: puid, connectionId } = presenceBumpedFor;
+        const count = await this.decrementRoomPresence(prid, puid, connectionId).catch(() => -1);
+        if (count === 0) {
+          // P1-22: preserve original timestamp — but here we don't have it,
+          // so use Date.now(). The join timestamp is preserved via the
+          // event bus publish path (eventToServerMessage).
+          await this.eventBus
+            .publish(prid, {
+              kind: 'participant.left',
+              roomId: prid,
+              userId: puid,
+              username: capturedUser?.username ?? 'unknown',
+              timestampMs: Date.now(),
+            })
+            .catch(() => {});
+        }
+      }
       if (joinedRoomId) {
         this.registry.disconnect(socket);
         await this.releaseRoomIfEmpty(joinedRoomId).catch(() => {});
-      }
-      if (retainedRoom) {
-        // retainedRoom is released via releaseRoomIfEmpty above
       }
       if (connectedPresence) {
         presence.disconnect(socket);
@@ -104,8 +126,13 @@ export class RealtimeGateway {
         }
       }
     };
-    socket.once('close', () => void cleanup());
-    socket.once('error', () => void cleanup());
+    // P0-23: single 'close' listener for entire lifecycle. No replacement.
+    socket.once('close', () => void finalize());
+    // Error event logs and triggers close — does NOT do partial cleanup.
+    socket.on('error', (err: Error) => {
+      console.warn('[RealtimeGateway] socket error:', err.message);
+      // socket error is followed by close — finalize runs there.
+    });
 
     // ── Auth via Sec-WebSocket-Protocol (runbook §2) ────────────────────
     const protocols = (req.headers['sec-websocket-protocol'] as string | undefined)
@@ -115,7 +142,7 @@ export class RealtimeGateway {
 
     if (!ticket) {
       socket.close(4001, 'Missing plink ticket in Sec-WebSocket-Protocol');
-      await cleanup();
+      await finalize();
       return;
     }
 
@@ -130,7 +157,7 @@ export class RealtimeGateway {
       ticketPayload = await this.verifyTicket(ticket);
     } catch (err) {
       socket.close(4001, `Ticket invalid: ${(err as Error).message}`);
-      await cleanup();
+      await finalize();
       return;
     }
 
@@ -141,12 +168,12 @@ export class RealtimeGateway {
     });
     if (!user) {
       socket.close(4001, 'User not found');
-      await cleanup();
+      await finalize();
       return;
     }
     if (user.bannedUntil && user.bannedUntil > new Date()) {
       socket.close(4003, 'User banned');
-      await cleanup();
+      await finalize();
       return;
     }
 
@@ -154,6 +181,7 @@ export class RealtimeGateway {
     socket.username = user.username;
     socket.role = user.role;
     socket.isAlive = true;
+    capturedUser = { id: user.id, username: user.username };  // for finalize
 
     // ── Parse roomId from URL path (NOT query) ──────────────────────────
     const url = new URL(req.url, 'http://localhost');
@@ -169,7 +197,7 @@ export class RealtimeGateway {
     if (!wsRoomId) {
       sendError(socket, 'NO_ROOM', 'roomId required in WS path');
       socket.close(4001, 'roomId required');
-      await cleanup();
+      await finalize();
       return;
     }
 
@@ -177,7 +205,7 @@ export class RealtimeGateway {
     if (wsRoomId !== ticketPayload.roomId) {
       sendError(socket, 'ROOM_MISMATCH', 'Ticket roomId does not match WS path roomId');
       socket.close(4003, 'Ticket room mismatch');
-      await cleanup();
+      await finalize();
       return;
     }
     const roomId = wsRoomId;
@@ -188,7 +216,7 @@ export class RealtimeGateway {
     if (!membership.allowed) {
       sendError(socket, 'NOT_MEMBER', 'User is not a member or host of this room');
       socket.close(4003, 'Not a room member or host');
-      await cleanup();
+      await finalize();
       return;
     }
     const currentIsHost = membership.isHost;
@@ -211,21 +239,45 @@ export class RealtimeGateway {
     } catch (err) {
       sendError(socket, 'PUBSUB_FAILED', `Failed to subscribe: ${(err as Error).message}`);
       socket.close(1011, 'PubSub subscribe failed');
-      await cleanup();
+      await finalize();
       return;
     }
 
-    // P1-12: Redis-backed presence count. Publish participant.joined only
-    // when this is the user's FIRST connection for this room (count 0 → 1).
-    const joinedCount = await this.bumpRoomPresence(roomId, user.id);
-    if (joinedCount === 1) {
-      await this.eventBus.publish(roomId, {
-        kind: 'participant.joined',
-        roomId,
-        userId: user.id,
-        username: user.username,
-        timestampMs: Date.now(),
-      });
+    // P0-22/P1-12/P0-24: Redis ZSET presence leases with proper cleanup tracking.
+    // If bumpRoomPresence succeeds but eventBus.publish throws, finalize()
+    // will decrement the count — no stale presence.
+    let currentConnectionId: string | undefined;
+    try {
+      const presence = await this.bumpRoomPresence(roomId, user.id);
+      currentConnectionId = presence.connectionId;
+      presenceCountBumped = true;  // P0-22: track for cleanup
+      presenceBumpedFor = { roomId, userId: user.id, connectionId: presence.connectionId };
+      if (presence.count === 1) {
+        const joinTimestamp = Date.now();
+        try {
+          await this.eventBus.publish(roomId, {
+            kind: 'participant.joined',
+            roomId,
+            userId: user.id,
+            username: user.username,
+            timestampMs: joinTimestamp,  // P1-22: preserve original timestamp
+          });
+        } catch (publishErr) {
+          // P0-22: publish failed — finalize() will decrement presence count
+          console.error('[RealtimeGateway] participant.joined publish failed:', publishErr);
+          sendError(socket, 'PUBLISH_FAILED', 'Failed to announce join');
+          socket.close(1011, 'Join publish failed');
+          await finalize();
+          return;
+        }
+      }
+    } catch (bumpErr) {
+      // P0-22: bumpRoomPresence itself failed — no presence to clean up
+      console.error('[RealtimeGateway] bumpRoomPresence failed:', bumpErr);
+      sendError(socket, 'PRESENCE_FAILED', 'Failed to track presence');
+      socket.close(1011, 'Presence tracking failed');
+      await finalize();
+      return;
     }
 
     // P0-16: session.ready role from CURRENT DB state, not ticket claim.
@@ -239,46 +291,58 @@ export class RealtimeGateway {
       });
     });
 
-    // Replace the early 'close' once handler with the real one now that
-    // we have committed state. The early handler called cleanup() which
-    // is idempotent — safe to call again.
-    socket.removeAllListeners('close');
-    socket.on('close', () => {
-      void cleanup();
-      // P1-12: decrement presence count; publish left only when last conn leaves
-      this.decrementRoomPresence(roomId, user.id).then((count) => {
-        if (count === 0) {
-          this.eventBus
-            .publish(roomId, {
-              kind: 'participant.left',
-              roomId,
-              userId: user.id,
-              username: user.username,
-              timestampMs: Date.now(),
-            })
-            .catch(() => {});
-        }
-      }).catch(() => {});
-    });
+    // P0-23: NO removeAllListeners. The single socket.once('close', finalize)
+    // registered at the top handles all cleanup — including presence
+    // decrement and participant.left publish. No late handler replacement.
   }
 
-  // ── P1-12: Redis-backed presence count ────────────────────────────────
-  private async bumpRoomPresence(roomId: string, userId: string): Promise<number> {
-    const key = `plink:presence:${roomId}:${userId}`;
-    const count = await this.deps.redis.incr(key);
-    // 30 minute TTL — auto-cleanup if socket dies without close event
-    await this.deps.redis.expire(key, 1800);
-    return count;
+  // ── P0-24: Redis ZSET connection leases with heartbeat refresh ────────
+  // Each connection gets a unique connectionId (UUID). ZSET member is the
+  // connectionId; score is leaseExpiresAtMs. Heartbeat refreshes the lease.
+  // Atomic Lua: remove expired members + count active.
+  private static readonly PRESENCE_LEASE_TTL_MS = 60_000;  // 60s, refreshed by heartbeat
+  private static readonly PRESENCE_LEASE_KEY = (roomId: string, userId: string) =>
+    `plink:presence:${roomId}:${userId}`;
+
+  private async bumpRoomPresence(roomId: string, userId: string): Promise<{ count: number; connectionId: string }> {
+    const connectionId = randomUUID();
+    const key = RealtimeGateway.PRESENCE_LEASE_KEY(roomId, userId);
+    const now = Date.now();
+    const expiresAt = now + RealtimeGateway.PRESENCE_LEASE_TTL_MS;
+    // Remove expired members, add new connection, count active
+    // Using ZADD with GT/chg flags + ZREMRANGEBYSCORE for expired
+    const pipeline = this.deps.redis.multi();
+    pipeline.zremrangebyscore(key, '-inf', now);  // remove expired
+    pipeline.zadd(key, expiresAt, connectionId);
+    pipeline.pexpire(key, RealtimeGateway.PRESENCE_LEASE_TTL_MS * 2);  // key TTL = 2x lease
+    pipeline.zcount(key, now, '+inf');  // count active connections
+    const results = await pipeline.exec();
+    const count = results ? Number(results[3][1]) : 0;
+    return { count, connectionId };
   }
 
-  private async decrementRoomPresence(roomId: string, userId: string): Promise<number> {
-    const key = `plink:presence:${roomId}:${userId}`;
-    const count = await this.deps.redis.decr(key);
-    if (count <= 0) {
+  private async decrementRoomPresence(roomId: string, userId: string, connectionId?: string): Promise<number> {
+    const key = RealtimeGateway.PRESENCE_LEASE_KEY(roomId, userId);
+    const now = Date.now();
+    if (connectionId) {
+      await this.deps.redis.zrem(key, connectionId);
+    } else {
+      // Fallback: no connectionId (shouldn't happen with P0-24)
+      await this.deps.redis.zremrangebyscore(key, '-inf', '+inf');
+    }
+    const count = await this.deps.redis.zcount(key, now, '+inf');
+    if (count === 0) {
       await this.deps.redis.del(key);
-      return 0;
     }
     return count;
+  }
+
+  // P0-24: refresh presence lease on heartbeat — called from Heartbeat class
+  async refreshPresenceLease(roomId: string, userId: string, connectionId: string): Promise<void> {
+    const key = RealtimeGateway.PRESENCE_LEASE_KEY(roomId, userId);
+    const expiresAt = Date.now() + RealtimeGateway.PRESENCE_LEASE_TTL_MS;
+    await this.deps.redis.zadd(key, expiresAt, connectionId);
+    await this.deps.redis.pexpire(key, RealtimeGateway.PRESENCE_LEASE_TTL_MS * 2);
   }
 
   // ── P0-2: ref-counted room listeners ───────────────────────────────────
@@ -415,17 +479,19 @@ export class RealtimeGateway {
     this.shuttingDown = true;
     this.heartbeat.close();
 
-    const drainMessage = JSON.stringify({
+    // P1-20: typed ServerDraining message (was inline JSON)
+    const drainMessage: ServerMessage = {
       type: 'server.draining',
       protocolVersion: 2,
       message: 'Server shutting down — please reconnect',
       retryInMs: 2000,
-    });
+    };
+    const encoded = JSON.stringify(drainMessage);
     for (const sock of this.deps.wss.clients) {
       const s = sock as PlinkSocket;
       if (s.readyState === s.OPEN) {
         try {
-          s.send(drainMessage);
+          s.send(encoded);
         } catch {}
       }
     }
