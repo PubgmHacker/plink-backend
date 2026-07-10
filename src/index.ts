@@ -71,11 +71,27 @@ fastify.decorate('authenticate', authenticate);
 fastify.addHook('onRequest', securityHeaders);
 
 // ═══════════════════════════════════════════════════════════════════════════
-// v95: Server-Side Extraction + StreamRelay
-// AVPlayer sends: GET /api/media/stream?videoId=ID&token=JWT
-// Backend extracts googlevideo URL (server IP = extraction IP = streaming IP)
-// then pipes bytes to AVPlayer. NO IP mismatch → NO 403.
-// Also supports b64url/url for backward compat.
+// v97: Transparent Proxy Mode (StreamRelay)
+// ═══════════════════════════════════════════════════════════════════════════
+// PROBLEM: iOS ExtractionBridge extracts googlevideo URL bound to iPhone IP.
+// Railway backend fetches from a different IP → YouTube returns 403 Forbidden.
+// Server-side extraction (yt-dlp/Piped) is also blocked on Railway (429/400).
+//
+// SOLUTION (v97): Backend acts as a TRANSPARENT PROXY.
+//   1. iOS extracts googlevideo URL via ExtractionBridge (iPhone IP)
+//   2. iOS base64-encodes the URL + cookies + User-Agent and sends to backend
+//   3. Backend decodes URL, STRIPS the `ip` query param (so YouTube validates
+//      by token, not by source IP), then fetches the cleaned URL forwarding
+//      Cookie + User-Agent + Referer headers from iOS
+//   4. Backend pipes the bytes back to AVPlayer
+//
+// Result: YouTube sees a request with iPhone UA + iPhone cookies + valid token.
+// Backend IP doesn't matter because the `ip` param is stripped.
+//
+// Mode priority:
+//   - b64url (v97 transparent proxy) ← PRIMARY, working path
+//   - videoId (v95 server-side extract) ← fallback, may fail (429/400)
+//   - url (legacy) ← last resort
 // ═══════════════════════════════════════════════════════════════════════════
 const PIPED_INSTANCES = [
   'https://pipedapi.kavin.rocks',
@@ -157,8 +173,9 @@ fastify.get('/api/media/stream', {
   const urlParam = new URLSearchParams(rawQuery).get('url');
   const tokenParam = new URLSearchParams(rawQuery).get('token');
   const b64cookiesParam = new URLSearchParams(rawQuery).get('b64cookies');
+  const b64uaParam = new URLSearchParams(rawQuery).get('b64ua'); // v97: WebView UA
 
-  console.log('[Relay] videoId:', videoIdParam || 'none', 'b64url:', !!b64urlParam, 'b64cookies:', !!b64cookiesParam);
+  console.log('[Relay] videoId:', videoIdParam || 'none', 'b64url:', !!b64urlParam, 'b64cookies:', !!b64cookiesParam, 'b64ua:', !!b64uaParam);
 
   if (!tokenParam) return reply.status(401).send({ error: 'Token required' });
   try {
@@ -167,7 +184,7 @@ fastify.get('/api/media/stream', {
     return reply.status(401).send({ error: 'Invalid token' });
   }
 
-  // v96: Decode cookies from base64
+  // v96: Decode cookies from base64 (sent by iOS ExtractionBridge)
   let cookieHeader = '';
   if (b64cookiesParam) {
     try {
@@ -178,12 +195,66 @@ fastify.get('/api/media/stream', {
     }
   }
 
+  // v97: Decode User-Agent from base64 (sent by iOS — the UA that the WebView
+  // used to extract the stream URL). Forwarding the SAME UA to YouTube CDN
+  // is critical: YouTube validates UA consistency between page-load (extraction)
+  // and media-fetch. If we sent a desktop UA here, YouTube would 403.
+  let userAgent = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) ' +
+                  'AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 ' +
+                  'Mobile/15E148 Safari/604.1';
+  if (b64uaParam) {
+    try {
+      userAgent = Buffer.from(b64uaParam, 'base64').toString('utf-8');
+      console.log('[Relay] ✅ Decoded User-Agent, len:', userAgent.length);
+    } catch {
+      console.log('[Relay] ⚠️ Failed to decode User-Agent, using default iPhone UA');
+    }
+  }
+
   // Determine target URL
   let targetUrl: string | null = null;
 
-  // Mode 1: videoId — server-side extraction (v95, solves IP mismatch)
-  if (videoIdParam) {
-    // Check cache
+  // Mode 1 (PRIMARY, v97): b64url — Transparent Proxy.
+  // iOS extracted the googlevideo URL; backend just strips the IP-bound param
+  // and forwards the request with iPhone UA + cookies. NO server-side extraction.
+  if (b64urlParam) {
+    try {
+      const decoded = Buffer.from(b64urlParam, 'base64').toString('utf-8');
+
+      // ── CRITICAL STEP: strip the `ip` query parameter ────────────────
+      // googlevideo URLs contain &ip=<extractor_ip> (iPhone's IP at extraction
+      // time). When Railway fetches from a different IP, YouTube validates the
+      // `ip` param against the actual source IP, sees a mismatch, and returns
+      // 403 Forbidden. Removing the param entirely forces YouTube to validate
+      // by signature token only — the URL still works because the signature
+      // covers all OTHER params (expire, itag, mime, etc.).
+      let cleaned = decoded.replace(/&amp;/g, '&'); // defensive: unescape HTML entities
+      // User-specified regex: /[&?]ip=[^&]+/g → empty string
+      cleaned = cleaned.replace(/[&?]ip=[^&]+/g, '');
+      // Fix separator: if `?ip=...` was the FIRST param, the `?` got removed
+      // and now the next `&` should become `?` to start the query string.
+      if (!cleaned.includes('?')) {
+        const firstAmp = cleaned.indexOf('&');
+        if (firstAmp !== -1) {
+          cleaned = cleaned.substring(0, firstAmp) + '?' + cleaned.substring(firstAmp + 1);
+        }
+      }
+      // Clean up dangling separators (double &, trailing ? or &)
+      cleaned = cleaned.replace(/&&/g, '&').replace(/[?&]$/, '');
+
+      targetUrl = cleaned;
+      console.log('[Relay] ✅ v97 transparent-proxy: decoded b64url + stripped `ip` param');
+      console.log('[Relay] Before:', decoded.substring(0, 160));
+      console.log('[Relay] After: ', cleaned.substring(0, 160));
+    } catch {
+      return reply.status(400).send({ error: 'Invalid base64' });
+    }
+  }
+  // Mode 2 (FALLBACK, v95): videoId — server-side extraction.
+  // Uses Piped API + yt-dlp. Currently BROKEN on Railway (429/400) but kept
+  // as a fallback for cases where iOS extraction fails and only videoId is
+  // available. Do NOT use this path when b64url is provided.
+  else if (videoIdParam) {
     const cached = urlCache.get(videoIdParam);
     if (cached && cached.expires > Date.now()) {
       targetUrl = cached.url;
@@ -192,7 +263,6 @@ fastify.get('/api/media/stream', {
       try {
         console.log('[Relay] Extracting stream URL for videoId:', videoIdParam);
         targetUrl = await extractStreamURL(videoIdParam);
-        // Cache for 5 minutes
         urlCache.set(videoIdParam, { url: targetUrl, expires: Date.now() + 300000 });
         console.log('[Relay] ✅ Extracted + cached URL');
       } catch (e: any) {
@@ -201,20 +271,11 @@ fastify.get('/api/media/stream', {
       }
     }
   }
-  // Mode 2: b64url (backward compat)
-  else if (b64urlParam) {
-    try {
-      targetUrl = Buffer.from(b64urlParam, 'base64').toString('utf-8');
-      console.log('[Relay] Decoded b64url, len:', targetUrl.length);
-    } catch {
-      return reply.status(400).send({ error: 'Invalid base64' });
-    }
-  }
-  // Mode 3: raw url (backward compat)
+  // Mode 3 (LEGACY): raw url — pass-through without modification.
   else if (urlParam) {
     targetUrl = urlParam;
   } else {
-    return reply.status(400).send({ error: 'videoId, b64url, or url required' });
+    return reply.status(400).send({ error: 'b64url, videoId, or url required' });
   }
 
   if (!targetUrl) {
@@ -224,8 +285,11 @@ fastify.get('/api/media/stream', {
   console.log('[Relay] Target:', targetUrl.substring(0, 100) + '...');
 
   try {
+    // v97: Forward iPhone UA (from iOS WebView) + cookies + Referer to YouTube CDN.
+    // This makes the backend look like the iPhone itself — YouTube can't
+    // distinguish the proxy request from the original extraction request.
     const upstreamHeaders: Record<string, string> = {
-      'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1',
+      'User-Agent': userAgent,
       'Referer': 'https://www.youtube.com/',
       'Origin': 'https://www.youtube.com',
     };
@@ -236,7 +300,7 @@ fastify.get('/api/media/stream', {
     }
     if (request.headers.range) upstreamHeaders['Range'] = request.headers.range;
 
-    console.log('[Relay] Fetching from YouTube CDN...');
+    console.log('[Relay] Fetching from YouTube CDN with iPhone UA + cookies...');
     const upstreamRes = await fetch(targetUrl, { headers: upstreamHeaders, redirect: 'follow' });
 
     console.log('[Relay] Upstream status:', upstreamRes.status, 'Content-Length:', upstreamRes.headers.get('content-length'));
