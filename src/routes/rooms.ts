@@ -281,10 +281,76 @@ export default async function roomRoutes(fastify, _options) {
         reply.send(safeRooms);
     });
 
+    // P0-50: GET /api/rooms/:id/participants — active participant snapshot
+    // Returns current participants based on Redis presence leases.
+    // Used by iOS client after session.ready to populate participant list.
+    fastify.get('/rooms/:id/participants', {
+        preHandler: [fastify.authenticate],
+        config: { rateLimit: { max: 30, timeWindow: '1 minute' } },
+    }, async (request: any, reply: any) => {
+        const { id: roomId } = request.params;
+
+        // Verify membership
+        const [participant, room] = await Promise.all([
+            prisma.roomParticipant.findUnique({
+                where: { roomID_userID: { roomID: roomId, userID: request.user.id } },
+                select: { id: true },
+            }).catch(() => null),
+            prisma.room.findUnique({
+                where: { id: roomId },
+                select: { hostID: true, isActive: true },
+            }),
+        ]);
+        if (!room) return reply.status(404).send({ error: 'Room not found' });
+        if (room.hostID !== request.user.id && !participant) {
+            return reply.status(403).send({ error: 'Not a room member' });
+        }
+
+        // Get all active presence lease keys for this room
+        // Keys are: plink:presence:{roomId}:{userId}
+        const pattern = `plink:presence:${roomId}:*`;
+        const keys = await fastify.redis?.keys(pattern) ?? [];
+
+        if (keys.length === 0) {
+            // No active presence — return just the host
+            const host = await prisma.user.findUnique({
+                where: { id: room.hostID },
+                select: { id: true, username: true },
+            });
+            return reply.send({
+                participants: host ? [{ userId: host.id, username: host.username }] : [],
+            });
+        }
+
+        // Extract userIds from keys and filter by active lease (score > now)
+        const now = Date.now();
+        const activeUserIds: string[] = [];
+        for (const key of keys) {
+            const userId = key.split(':').pop();
+            if (!userId) continue;
+            const count = await fastify.redis?.zcount(key, now, '+inf') ?? 0;
+            if (count > 0) {
+                activeUserIds.push(userId);
+            }
+        }
+
+        // Always include host even if no lease (host may not have WS connected)
+        if (!activeUserIds.includes(room.hostID)) {
+            activeUserIds.push(room.hostID);
+        }
+
+        // Fetch usernames
+        const users = await prisma.user.findMany({
+            where: { id: { in: activeUserIds } },
+            select: { id: true, username: true },
+        });
+
+        return reply.send({
+            participants: users.map(u => ({ userId: u.id, username: u.username })),
+        });
+    });
+
     // P1-11: GET /api/rooms/:id/messages — chat catch-up after reconnect
-    // Returns messages created after the given cursor (messageId).
-    // Client uses this after WS reconnect to fetch messages missed during
-    // offline/PubSub outage. clientMessageId is used for dedupe.
     fastify.get('/rooms/:id/messages', {
         preHandler: [fastify.authenticate],
         config: { rateLimit: { max: 30, timeWindow: '1 minute' } },
