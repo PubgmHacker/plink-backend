@@ -281,6 +281,82 @@ export default async function roomRoutes(fastify, _options) {
         reply.send(safeRooms);
     });
 
+    // P1-11: GET /api/rooms/:id/messages — chat catch-up after reconnect
+    // Returns messages created after the given cursor (messageId).
+    // Client uses this after WS reconnect to fetch messages missed during
+    // offline/PubSub outage. clientMessageId is used for dedupe.
+    fastify.get('/rooms/:id/messages', {
+        preHandler: [fastify.authenticate],
+        config: { rateLimit: { max: 30, timeWindow: '1 minute' } },
+    }, async (request: any, reply: any) => {
+        const { id: roomId } = request.params;
+        const after = (request.query as any)?.after as string | undefined;
+        const limit = Math.min(parseInt((request.query as any)?.limit as string) || 50, 200);
+
+        // Verify membership
+        const [participant, room] = await Promise.all([
+            prisma.roomParticipant.findUnique({
+                where: { roomID_userID: { roomID: roomId, userID: request.user.id } },
+                select: { id: true },
+            }).catch(() => null),
+            prisma.room.findUnique({
+                where: { id: roomId },
+                select: { hostID: true, isActive: true },
+            }),
+        ]);
+        if (!room) return reply.status(404).send({ error: 'Room not found' });
+        if (room.hostID !== request.user.id && !participant) {
+            return reply.status(403).send({ error: 'Not a room member' });
+        }
+
+        // Find cursor message createdAt, then fetch messages after it
+        let afterCreatedAt: Date | undefined;
+        if (after) {
+            const cursor = await prisma.chatMessage.findUnique({
+                where: { id: after },
+                select: { createdAt: true, roomID: true },
+            });
+            if (cursor && cursor.roomID === roomId) {
+                afterCreatedAt = cursor.createdAt;
+            }
+        }
+
+        const messages = await prisma.chatMessage.findMany({
+            where: {
+                roomID: roomId,
+                ...(afterCreatedAt ? { createdAt: { gt: afterCreatedAt } } : {}),
+            },
+            orderBy: { createdAt: 'asc' },
+            take: limit,
+            select: {
+                id: true,
+                senderID: true,
+                text: true,
+                createdAt: true,
+            },
+        });
+
+        // Fetch sender usernames in bulk
+        const senderIds = [...new Set(messages.map(m => m.senderID))];
+        const senders = await prisma.user.findMany({
+            where: { id: { in: senderIds } },
+            select: { id: true, username: true },
+        });
+        const senderMap = new Map(senders.map(s => [s.id, s.username]));
+
+        reply.send({
+            messages: messages.map(m => ({
+                messageId: m.id,
+                clientMessageId: null,  // catch-up messages don't have clientMessageId
+                senderId: m.senderID,
+                senderName: senderMap.get(m.senderID) ?? 'unknown',
+                text: m.text,
+                createdAtMs: m.createdAt.getTime(),
+            })),
+            hasMore: messages.length === limit,
+        });
+    });
+
     // 🔧 AUTO-CLEANUP CRON: every 5 minutes, find rooms where isActive=true
     // but have 0 participants AND host is not in participants (orphan rooms).
     // Mark them as ended (isActive=false) so they disappear from

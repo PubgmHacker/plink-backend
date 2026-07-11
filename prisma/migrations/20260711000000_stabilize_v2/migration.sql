@@ -241,7 +241,13 @@ CREATE UNIQUE INDEX "FriendRequest_fromUserID_toUserID_key" ON "FriendRequest"("
 CREATE UNIQUE INDEX "Friendship_userID_friendID_key" ON "Friendship"("userID", "friendID");
 
 -- CreateIndex
-CREATE UNIQUE INDEX "PlaybackState_roomID_userID_key" ON "PlaybackState"("roomID", "userID");
+-- P1-29: partial unique indexes for nullable userID.
+-- PostgreSQL allows multiple rows with userID IS NULL in a regular unique
+-- index. Use partial indexes to enforce:
+--   - one PlaybackState per (roomID, userID) when userID IS NOT NULL
+--   - one PlaybackState per roomID when userID IS NULL (room-level state)
+CREATE UNIQUE INDEX "PlaybackState_roomID_userID_key" ON "PlaybackState"("roomID", "userID") WHERE "userID" IS NOT NULL;
+CREATE UNIQUE INDEX "PlaybackState_roomID_key" ON "PlaybackState"("roomID") WHERE "userID" IS NULL;
 
 -- CreateIndex
 CREATE INDEX "PlaybackState_roomID_updatedAt_idx" ON "PlaybackState"("roomID", "updatedAt");

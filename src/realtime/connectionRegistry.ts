@@ -18,6 +18,9 @@ export interface PlinkSocket extends WebSocket {
   role?: string;
   activeRoomId?: string;
   isAlive?: boolean;
+  // P0-25: presence lease connectionId — set after bumpRoomPresence,
+  // used by heartbeat to refresh lease via refreshPresenceLease().
+  connectionId?: string;
   _rateBuckets?: Map<string, { count: number; resetAt: number }>;
 }
 

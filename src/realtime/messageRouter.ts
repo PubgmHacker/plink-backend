@@ -378,20 +378,24 @@ export function makeSyncStateMessage(roomId: string, state: RoomState): SyncStat
   };
 }
 
+// P1-26: timestampMs parameter — preserve original event timestamp
+// instead of regenerating Date.now() at conversion time.
 export function makeParticipantEvent(
   kind: 'participant.joined' | 'participant.left',
   roomId: string,
   userId: string,
   username: string,
+  timestampMs?: number,
 ): ParticipantEvent {
+  const ts = timestampMs ?? Date.now();
   return {
     type: kind,
     protocolVersion: 2,
     roomId,
     userId,
     username,
-    joinedAtMs: kind === 'participant.joined' ? Date.now() : undefined,
-    leftAtMs: kind === 'participant.left' ? Date.now() : undefined,
+    joinedAtMs: kind === 'participant.joined' ? ts : undefined,
+    leftAtMs: kind === 'participant.left' ? ts : undefined,
   };
 }
 

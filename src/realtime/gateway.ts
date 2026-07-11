@@ -68,7 +68,26 @@ export class RealtimeGateway {
         return s?.epoch ?? 1;
       },
     });
-    this.heartbeat = new Heartbeat(deps.wss, this.registry);
+    // P0-25: Heartbeat now takes callbacks for presence lease refresh.
+    // onPong refreshes the lease; onDead is informational only (finalize
+    // handles cleanup via 'close' event).
+    this.heartbeat = new Heartbeat(deps.wss, {
+      onPong: (socket) => {
+        // Coalesced refresh — onPong fires every 20s, lease TTL is 60s,
+        // so refreshing on every pong keeps lease alive with 3x margin.
+        if (socket.activeRoomId && socket.userId && socket.connectionId) {
+          this.refreshPresenceLease(socket.activeRoomId, socket.userId, socket.connectionId)
+            .catch((err) => {
+              console.warn('[Heartbeat] lease refresh failed:', err);
+            });
+        }
+      },
+      onDead: (socket) => {
+        // P1-28: do NOT disconnect registry here — finalize does it.
+        // Just log for observability.
+        console.debug('[Heartbeat] dead socket terminated:', socket.userId);
+      },
+    });
 
     deps.wss.on('connection', (socket: PlinkSocket, req) => this.onConnection(socket, req));
   }
@@ -95,28 +114,11 @@ export class RealtimeGateway {
     const finalize = async () => {
       if (finalized) return;
       finalized = true;
-      // P0-22: decrement presence count if it was bumped
-      if (presenceCountBumped && presenceBumpedFor) {
-        const { roomId: prid, userId: puid, connectionId } = presenceBumpedFor;
-        const count = await this.decrementRoomPresence(prid, puid, connectionId).catch(() => -1);
-        if (count === 0) {
-          // P1-22: preserve original timestamp — but here we don't have it,
-          // so use Date.now(). The join timestamp is preserved via the
-          // event bus publish path (eventToServerMessage).
-          await this.eventBus
-            .publish(prid, {
-              kind: 'participant.left',
-              roomId: prid,
-              userId: puid,
-              username: capturedUser?.username ?? 'unknown',
-              timestampMs: Date.now(),
-            })
-            .catch(() => {});
-        }
-      }
+      // P1-27: local synchronous cleanup FIRST — never block on Redis.
+      // Registry disconnect, presence/metrics decrement, listener release
+      // all happen synchronously before any Redis call.
       if (joinedRoomId) {
         this.registry.disconnect(socket);
-        await this.releaseRoomIfEmpty(joinedRoomId).catch(() => {});
       }
       if (connectedPresence) {
         presence.disconnect(socket);
@@ -124,6 +126,35 @@ export class RealtimeGateway {
           wsConnections.dec();
           usersOnline.set(presence.getOnlineUsers().length);
         }
+      }
+      // Release local room listeners if no local sockets remain
+      if (joinedRoomId) {
+        await this.releaseRoomIfEmpty(joinedRoomId).catch(() => {});
+      }
+      // P0-22/P1-27: distributed cleanup (Redis presence + event bus publish)
+      // with bounded timeout — don't let Redis hang block local cleanup.
+      if (presenceCountBumped && presenceBumpedFor) {
+        const { roomId: prid, userId: puid, connectionId } = presenceBumpedFor;
+        const distributedCleanup = (async () => {
+          const count = await this.decrementRoomPresence(prid, puid, connectionId).catch(() => -1);
+          if (count === 0) {
+            await this.eventBus
+              .publish(prid, {
+                kind: 'participant.left',
+                roomId: prid,
+                userId: puid,
+                username: capturedUser?.username ?? 'unknown',
+                timestampMs: Date.now(),
+              })
+              .catch(() => {});
+          }
+        })();
+        // Bounded timeout — if Redis is down, log and move on. Presence
+        // lease will expire naturally (60s TTL).
+        await Promise.race([
+          distributedCleanup,
+          new Promise<void>((resolve) => setTimeout(resolve, 2000)),
+        ]).catch(() => {});
       }
     };
     // P0-23: single 'close' listener for entire lifecycle. No replacement.
@@ -243,13 +274,13 @@ export class RealtimeGateway {
       return;
     }
 
-    // P0-22/P1-12/P0-24: Redis ZSET presence leases with proper cleanup tracking.
+    // P0-22/P1-12/P0-24/P0-25: Redis ZSET presence leases with proper cleanup tracking.
     // If bumpRoomPresence succeeds but eventBus.publish throws, finalize()
     // will decrement the count — no stale presence.
-    let currentConnectionId: string | undefined;
     try {
       const presence = await this.bumpRoomPresence(roomId, user.id);
-      currentConnectionId = presence.connectionId;
+      // P0-25: store connectionId on socket so heartbeat can refresh lease
+      socket.connectionId = presence.connectionId;
       presenceCountBumped = true;  // P0-22: track for cleanup
       presenceBumpedFor = { roomId, userId: user.id, connectionId: presence.connectionId };
       if (presence.count === 1) {
@@ -260,7 +291,7 @@ export class RealtimeGateway {
             roomId,
             userId: user.id,
             username: user.username,
-            timestampMs: joinTimestamp,  // P1-22: preserve original timestamp
+            timestampMs: joinTimestamp,  // P1-22/P1-26: preserve original timestamp
           });
         } catch (publishErr) {
           // P0-22: publish failed — finalize() will decrement presence count
@@ -390,9 +421,10 @@ export class RealtimeGateway {
   private eventToServerMessage(event: RoomEvent): ServerMessage | null {
     switch (event.kind) {
       case 'participant.joined':
-        return makeParticipantEvent('participant.joined', event.roomId, event.userId, event.username);
+        // P1-26: preserve original event timestampMs
+        return makeParticipantEvent('participant.joined', event.roomId, event.userId, event.username, event.timestampMs);
       case 'participant.left':
-        return makeParticipantEvent('participant.left', event.roomId, event.userId, event.username);
+        return makeParticipantEvent('participant.left', event.roomId, event.userId, event.username, event.timestampMs);
       case 'chat.broadcast':
         return {
           type: 'chat.broadcast',

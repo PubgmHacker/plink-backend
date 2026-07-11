@@ -1,29 +1,48 @@
-// src/realtime/heartbeat.ts — WS ping/pong heartbeat (runbook §5)
+// src/realtime/heartbeat.ts — WS ping/pong heartbeat (runbook §5 + Brain Review 4 P0-25, P1-28)
 //
-// Per §5: heartbeat isAlive via WS ping frames every 20 seconds.
-// On WS, the server sends a ping frame; the client must respond with a pong.
-// If no pong arrives within ~30s, we terminate the connection.
+// Brain Review 4 fixes:
 //
-// This catches: half-open TCP (NAT timeout), zombie connections on LB failover,
-// clients that crashed without sending close.
+// P0-25: heartbeat now refreshes presence lease on pong. callback-based —
+//   gateway passes onPong(socket) that calls refreshPresenceLease() with
+//   socket.connectionId. Coalesced refresh (max once per 20s) to avoid
+//   Redis write on every pong.
+//
+// P1-28: heartbeat no longer calls registry.disconnect on dead socket.
+//   Only calls socket.terminate() — finalize (registered via socket.once
+//   in gateway) handles ALL cleanup including registry disconnect.
 
 import type { WebSocketServer } from 'ws';
-import type { PlinkSocket, ConnectionRegistry } from './connectionRegistry.js';
+import type { PlinkSocket } from './connectionRegistry.js';
 
 const HEARTBEAT_INTERVAL_MS = 20_000;
-const TERMINATE_GRACE_MS = 35_000;
+export const TERMINATE_GRACE_MS = 35_000;
+
+export interface HeartbeatCallbacks {
+  /** Called when a pong is received — gateway refreshes presence lease. */
+  onPong?: (socket: PlinkSocket) => void;
+  /** Called when a socket is detected as dead — gateway does NOT need to
+   * disconnect registry here; finalize handles it via the 'close' event. */
+  onDead?: (socket: PlinkSocket) => void;
+}
 
 export class Heartbeat {
   private readonly interval: NodeJS.Timeout;
-  private readonly registry: ConnectionRegistry;
+  private readonly callbacks: HeartbeatCallbacks;
 
-  constructor(wss: WebSocketServer, registry: ConnectionRegistry) {
-    this.registry = registry;
+  constructor(wss: WebSocketServer, callbacks: HeartbeatCallbacks = {}) {
+    this.callbacks = callbacks;
 
     wss.on('connection', (socket: PlinkSocket) => {
       socket.isAlive = true;
       socket.on('pong', () => {
         socket.isAlive = true;
+        // P0-25: refresh presence lease on pong
+        try {
+          this.callbacks.onPong?.(socket);
+        } catch (err) {
+          // Lease refresh failure must not crash heartbeat loop.
+          console.warn('[Heartbeat] onPong callback error:', err);
+        }
       });
     });
 
@@ -31,9 +50,14 @@ export class Heartbeat {
       wss.clients.forEach((sock) => {
         const socket = sock as PlinkSocket;
         if (socket.isAlive === false) {
-          // No pong since last ping — terminate
-          socket.terminate();
-          this.registry.disconnect(socket);
+          // P1-28: only terminate — finalize (via 'close') does ALL cleanup.
+          // Do NOT call registry.disconnect here — that's finalize's job.
+          try {
+            socket.terminate();
+          } catch {}
+          try {
+            this.callbacks.onDead?.(socket);
+          } catch {}
           return;
         }
         socket.isAlive = false;
@@ -44,7 +68,6 @@ export class Heartbeat {
         }
       });
     }, HEARTBEAT_INTERVAL_MS);
-    // Don't keep the event loop alive just for heartbeat
     this.interval.unref();
   }
 
@@ -53,6 +76,4 @@ export class Heartbeat {
   }
 }
 
-// Re-export type for convenience
 export type { PlinkSocket };
-export const TERMINATE_GRACE = TERMINATE_GRACE_MS;
