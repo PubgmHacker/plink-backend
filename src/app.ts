@@ -30,6 +30,7 @@ import messageRoutes from './routes/messages.js';
 import profileRoutes from './routes/profile.js';
 import mediaRoutes from './routes/media.js';
 import billingRoutes from './routes/billing.js';
+import { adminRoutes } from './routes/admin.js';
 import gdprRoutes from './routes/gdpr.js';
 import featureFlagRoutes from './routes/featureFlags.js';
 import aiRoutes from './routes/ai.js';
@@ -118,6 +119,8 @@ export async function buildApp(): Promise<{
   await fastify.register(profileRoutes, { prefix: '/api' });
   await fastify.register(mediaRoutes, { prefix: '/api' });
   await fastify.register(billingRoutes, { prefix: '/api' });
+  // PATCH 16: Admin API — Brain Review 10 P0-67/P0-69
+  await fastify.register(adminRoutes, { prefix: '/api' });
   await fastify.register(gdprRoutes, { prefix: '/api' });
   await fastify.register(featureFlagRoutes, { prefix: '/api' });
   await fastify.register(aiRoutes, { prefix: '/api' });
