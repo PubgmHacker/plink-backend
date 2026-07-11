@@ -149,6 +149,12 @@ export interface RouterDeps {
   pubsub: RoomPubSub;
   registry: ConnectionRegistry;
   /**
+   * P0-3: typed event bus for chat/reaction/participant distribution
+   * across replicas. Router PUBLISHES to this bus; gateway subscribes
+   * per-room and fans out to local sockets.
+   */
+  eventBus: import('./roomEventBus.js').RoomEventBus;
+  /**
    * Returns the current epoch for a room. Typically reads from the last
    * known state in Redis (via store.get), defaulting to 1.
    */
@@ -156,7 +162,7 @@ export interface RouterDeps {
 }
 
 export function createMessageRouter(deps: RouterDeps) {
-  const { prisma, store, pubsub, registry, currentEpoch } = deps;
+  const { prisma, store, registry, eventBus, currentEpoch } = deps;
 
   /**
    * Handle a single inbound WebSocket message.
@@ -284,10 +290,12 @@ export function createMessageRouter(deps: RouterDeps) {
             text: m.text,
           },
         });
-        // Broadcast — identity comes from JWT, not payload (§5)
-        const broadcast: ChatBroadcast = {
-          type: 'chat.broadcast',
-          protocolVersion: 2,
+        // P0-3: publish to event bus — ALL replicas (including this one)
+        // receive via subscriber and fan out to local sockets. We do NOT
+        // also call registry.broadcastLocal — that would double-deliver
+        // to local sockets on this replica.
+        await eventBus.publish(m.roomId, {
+          kind: 'chat.broadcast',
           roomId: m.roomId,
           messageId: created.id,
           clientMessageId: m.clientMessageId,
@@ -295,8 +303,7 @@ export function createMessageRouter(deps: RouterDeps) {
           senderName: socket.username ?? 'unknown',
           text: m.text,
           createdAtMs: created.createdAt?.getTime?.() ?? Date.now(),
-        };
-        registry.broadcastLocal(m.roomId, broadcast, /* exclude */ socket);
+        });
         return;
       }
 
@@ -311,19 +318,15 @@ export function createMessageRouter(deps: RouterDeps) {
           sendError(socket, 'NOT_MEMBER', 'User is not a member of this room');
           return;
         }
-        registry.broadcastLocal(
-          m.roomId,
-          {
-            type: 'reaction.broadcast',
-            protocolVersion: 2,
-            roomId: m.roomId,
-            userId: socket.userId!,
-            username: socket.username ?? 'unknown',
-            emoji: m.emoji,
-            serverTimeMs: Date.now(),
-          },
-          /* exclude */ socket,
-        );
+        // P0-3: publish via event bus — same fanout rule as chat.
+        await eventBus.publish(m.roomId, {
+          kind: 'reaction.broadcast',
+          roomId: m.roomId,
+          userId: socket.userId!,
+          username: socket.username ?? 'unknown',
+          emoji: m.emoji,
+          serverTimeMs: Date.now(),
+        });
         return;
       }
 
@@ -375,20 +378,24 @@ export function makeSyncStateMessage(roomId: string, state: RoomState): SyncStat
   };
 }
 
+// P1-26: timestampMs parameter — preserve original event timestamp
+// instead of regenerating Date.now() at conversion time.
 export function makeParticipantEvent(
   kind: 'participant.joined' | 'participant.left',
   roomId: string,
   userId: string,
   username: string,
+  timestampMs?: number,
 ): ParticipantEvent {
+  const ts = timestampMs ?? Date.now();
   return {
     type: kind,
     protocolVersion: 2,
     roomId,
     userId,
     username,
-    joinedAtMs: kind === 'participant.joined' ? Date.now() : undefined,
-    leftAtMs: kind === 'participant.left' ? Date.now() : undefined,
+    joinedAtMs: kind === 'participant.joined' ? ts : undefined,
+    leftAtMs: kind === 'participant.left' ? ts : undefined,
   };
 }
 

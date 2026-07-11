@@ -183,6 +183,29 @@ export const SessionReadySchema = z
   })
   .strict();
 
+/** P1-64: role migration event — host change with epoch bump */
+export const RoleChangedSchema = z
+  .object({
+    type: z.literal('role.changed'),
+    protocolVersion: z.literal(2),
+    roomId: z.string().uuid(),
+    newHostId: z.string().uuid(),
+    newRole: z.enum(['host', 'viewer']),
+    epoch: z.number().int().positive(),
+    serverTimeMs: z.number().int(),
+  })
+  .strict();
+
+/** Server draining — graceful shutdown announcement (P1-20: typed contract). */
+export const ServerDrainingSchema = z
+  .object({
+    type: z.literal('server.draining'),
+    protocolVersion: z.literal(2),
+    message: z.string().min(1).max(512),
+    retryInMs: z.number().int().nonnegative(),
+  })
+  .strict();
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
 // ─────────────────────────────────────────────────────────────────────────────
@@ -202,6 +225,8 @@ export type ReactionBroadcast = z.infer<typeof ReactionBroadcastSchema>;
 export type ParticipantEvent = z.infer<typeof ParticipantEventSchema>;
 export type ErrorMessage = z.infer<typeof ErrorMessageSchema>;
 export type SessionReady = z.infer<typeof SessionReadySchema>;
+export type RoleChanged = z.infer<typeof RoleChangedSchema>;
+export type ServerDraining = z.infer<typeof ServerDrainingSchema>;
 
 /** Discriminated union of all client→server messages for type-safe routing. */
 export const ClientMessageSchema = z.discriminatedUnion('type', [
@@ -224,6 +249,8 @@ export const ServerMessageSchema = z.discriminatedUnion('type', [
   ParticipantEventSchema,
   ErrorMessageSchema,
   SessionReadySchema,
+  RoleChangedSchema,  // P1-64
+  ServerDrainingSchema,
 ]);
 
 export type ServerMessage = z.infer<typeof ServerMessageSchema>;
@@ -247,4 +274,6 @@ export const SERVER_MESSAGE_TYPES = [
   'participant.left',
   'error',
   'session.ready',
+  'role.changed',  // P1-64
+  'server.draining',
 ] as const;

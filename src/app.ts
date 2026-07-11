@@ -30,18 +30,34 @@ import messageRoutes from './routes/messages.js';
 import profileRoutes from './routes/profile.js';
 import mediaRoutes from './routes/media.js';
 import billingRoutes from './routes/billing.js';
+import { adminRoutes } from './routes/admin.js';
 import gdprRoutes from './routes/gdpr.js';
 import featureFlagRoutes from './routes/featureFlags.js';
 import aiRoutes from './routes/ai.js';
+import { livekitRoutes } from "./routes/livekit.js";
+import { roomJoinDuration, syncDrift, syncHardCorrections, wsReconnectCount, presenceLeaseCount } from "./observability/slo-metrics.js";
 import { realtimeTicketRoutes } from './routes/realtime.js';
 import { legacyStreamRelayRoutes, shouldRegisterLegacyRelay } from './routes/legacy/legacyStreamRelay.js';
 
 export async function buildApp(): Promise<{
   app: FastifyInstance;
-  gateway: RealtimeGateway;
+  // P1-13: gateway is null when Redis is unavailable. Callers MUST handle null.
+  gateway: RealtimeGateway | null;
 }> {
   // §2: refuse to boot in production on weak secret / CORS '*' / no audiences
   assertProductionInvariants();
+
+  // P1-4: Redis is REQUIRED for realtime v2 (RoomStateStore, RoomPubSub,
+  // RoomEventBus, ticket nonce). Refuse to start the gateway if missing.
+  if (!redis) {
+    if (config.isProduction) {
+      throw new Error(
+        'FATAL: REDIS_URL is required for realtime v2 in production. ' +
+          'Set REDIS_URL or disable realtime (REALTIME_PROTOCOL_V2=false) and rebuild.',
+      );
+    }
+    console.warn('[app] Redis not configured — realtime v2 routes will 503');
+  }
 
   initTelemetry(process.env.OTEL_ENDPOINT);
 
@@ -103,9 +119,12 @@ export async function buildApp(): Promise<{
   await fastify.register(profileRoutes, { prefix: '/api' });
   await fastify.register(mediaRoutes, { prefix: '/api' });
   await fastify.register(billingRoutes, { prefix: '/api' });
+  // PATCH 16: Admin API — Brain Review 10 P0-67/P0-69
+  await fastify.register(adminRoutes, { prefix: '/api' });
   await fastify.register(gdprRoutes, { prefix: '/api' });
   await fastify.register(featureFlagRoutes, { prefix: '/api' });
   await fastify.register(aiRoutes, { prefix: '/api' });
+await fastify.register(livekitRoutes, { prefix: '/api' });  // Stage 9
   await fastify.register(realtimeTicketRoutes, { prefix: '/api' });
 
   // ── LEGACY stream relay (gated — App Store compliant builds skip) ──────
@@ -122,12 +141,20 @@ export async function buildApp(): Promise<{
   }
 
   // ── Realtime gateway (replaces setupWebSocketHandler) ─────────────────
-  const gateway = new RealtimeGateway({
-    fastify,
-    prisma,
-    redis: redis!,
-    wss: fastify.websocketServer,
-  });
+  // P1-4: only construct gateway when Redis is available — gateway's
+  // constructor eagerly creates RoomStateStore/RoomPubSub/RoomEventBus
+  // which require a live Redis connection.
+  let gateway: RealtimeGateway | null = null;
+  if (redis) {
+    gateway = new RealtimeGateway({
+      fastify,
+      prisma,
+      redis,
+      wss: fastify.websocketServer,
+    });
+  } else {
+    fastify.log.warn('Realtime gateway NOT constructed — Redis unavailable');
+  }
 
   // Register /ws and /ws/room/:id as websocket routes (no-op handlers —
   // the gateway subscribes to 'connection' events on the websocketServer)
@@ -135,27 +162,37 @@ export async function buildApp(): Promise<{
   fastify.get('/ws/room/:id', { websocket: true }, async () => {});
 
   // ── Health (split into liveness + readiness — runbook §19) ────────────
+  // P1-3: /health/ready returns 503 when DB or Redis is down, so
+  // orchestrators (k8s, Railway, ELB) stop sending traffic.
   fastify.get('/health/live', async () => ({ status: 'alive', ts: Date.now() }));
-  fastify.get('/health/ready', async () => {
+  fastify.get('/health/ready', async (_req, reply) => {
     const [db, r] = await Promise.all([checkDatabase(), checkRedis()]);
-    const ready = db && r;
+    const ready = db && r === true;
+    if (!ready) {
+      reply.status(503);
+    }
     return {
       status: ready ? 'ready' : 'degraded',
-      services: { database: db ? 'up' : 'down', redis: r ? 'up' : 'down' },
+      services: {
+        database: db ? 'up' : 'down',
+        redis: r === null ? 'not_configured' : r ? 'up' : 'down',
+      },
     };
   });
   // Backwards-compatible /health for old monitors
-  fastify.get('/health', async () => {
+  fastify.get('/health', async (_req, reply) => {
     const [db, r] = await Promise.all([checkDatabase(), checkRedis()]);
+    const ok = db && r === true;
+    if (!ok) reply.status(503);
     return {
-      status: db && r ? 'ok' : 'degraded',
+      status: ok ? 'ok' : 'degraded',
       timestamp: Date.now(),
       uptime: process.uptime(),
       version: '2.0.0-stabilize',
       environment: config.NODE_ENV,
       services: {
         database: db ? 'up' : 'down',
-        redis: r ? 'up' : r === null ? 'not_configured' : 'down',
+        redis: r === null ? 'not_configured' : r ? 'up' : 'down',
         appStoreCompliant: config.APP_STORE_COMPLIANT,
         legacyRelay: shouldRegisterLegacyRelay(),
         realtimeV2: config.REALTIME_PROTOCOL_V2,
@@ -175,21 +212,42 @@ export async function buildApp(): Promise<{
     reply.code(404).send({ error: 'Not Found' });
   });
 
-  // Error handler — never leak stack traces in production (§19)
+  // Error handler — P1-5: never leak internal error messages in production
+  // for 5xx (return generic 'Internal Server Error'). For 4xx validation/
+  // auth errors, return the safe mapped message. Stack traces are logged
+  // and sent to Sentry, never sent to client.
   fastify.setErrorHandler((error: any, request, reply) => {
-    if (error.statusCode >= 500) {
-      Sentry.captureException(error);
-    }
+    const status = error.statusCode || 500;
     const isProd = config.isProduction;
-    reply.status(error.statusCode || 500).send({
-      error: error.message || 'Internal Server Error',
-      statusCode: error.statusCode || 500,
+    if (status >= 500) {
+      Sentry.captureException(error);
+      request.log.error({ err: error, requestId: request.id }, 'server error');
+    }
+    // Safe message mapping
+    let safeMessage: string;
+    if (status >= 500 && isProd) {
+      safeMessage = 'Internal Server Error';
+    } else if (status === 401) {
+      safeMessage = 'Unauthorized';
+    } else if (status === 403) {
+      safeMessage = 'Forbidden';
+    } else if (status === 404) {
+      safeMessage = 'Not Found';
+    } else if (status === 429) {
+      safeMessage = 'Rate limit exceeded';
+    } else {
+      // 4xx validation errors — Fastify validation messages are safe to echo
+      safeMessage = error.message || 'Bad Request';
+    }
+    reply.status(status).send({
+      error: safeMessage,
+      statusCode: status,
       requestId: request.id,
       ...(isProd ? {} : { stack: error.stack }),
     });
   });
 
-  return { app: fastify, gateway };
+  return { app: fastify, gateway: gateway };  // P1-13: gateway is RealtimeGateway | null
 }
 
 async function checkDatabase(): Promise<boolean> {

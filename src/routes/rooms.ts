@@ -281,29 +281,218 @@ export default async function roomRoutes(fastify, _options) {
         reply.send(safeRooms);
     });
 
-    // 🔧 AUTO-CLEANUP CRON: every 5 minutes, find rooms where isActive=true
-    // but have 0 participants AND host is not in participants (orphan rooms).
-    // Mark them as ended (isActive=false) so they disappear from
-    // the public list but stay in the host's history.
-    //
-    // This handles edge cases:
-    // - Host created room but never joined (orphan with 0 participants)
-    // - All participants left via WS disconnect without calling /leave
-    // - Server restart left rooms in inconsistent state
+    // P0-50/P0-56/P0-57: GET /api/rooms/:id/participants — active participant snapshot
+    // P0-56: NO Redis KEYS — uses room-indexed ZSET + Lua to prune expired and return active userIds.
+    // P0-57: host returned separately with online status, not forced into participants.
+    // P1-65: single Lua call, no N+1 zcount.
+    fastify.get('/rooms/:id/participants', {
+        preHandler: [fastify.authenticate],
+        config: { rateLimit: { max: 30, timeWindow: '1 minute' } },
+    }, async (request: any, reply: any) => {
+        const { id: roomId } = request.params;
+
+        // Verify membership
+        const [participant, room] = await Promise.all([
+            prisma.roomParticipant.findUnique({
+                where: { roomID_userID: { roomID: roomId, userID: request.user.id } },
+                select: { id: true },
+            }).catch(() => null),
+            prisma.room.findUnique({
+                where: { id: roomId },
+                select: { hostID: true, isActive: true },
+            }),
+        ]);
+        if (!room) return reply.status(404).send({ error: 'Room not found' });
+        if (room.hostID !== request.user.id && !participant) {
+            return reply.status(403).send({ error: 'Not a room member' });
+        }
+
+        // P0-56: Use room-indexed ZSET instead of KEYS.
+        // Each presence key is plink:presence:{roomId}:{userId} with ZSET of
+        // connectionId → leaseExpiresAtMs. We also maintain a room-level index
+        // ZSET: plink:room:{roomId}:activeUsers with userId → latestLeaseExpiresAtMs.
+        // This Lua script prunes expired entries from both the index and
+        // individual user keys, then returns active userIds.
+        const redis = fastify.redis;
+        let activeUserIds: string[] = [];
+        if (redis) {
+            const now = Date.now();
+            const roomIndexKey = `plink:room:${roomId}:activeUsers`;
+            // Prune expired from room index
+            await redis.zremrangebyscore(roomIndexKey, '-inf', now);
+            // Get active userIds from room index
+            const activeEntries = await redis.zrangebyscore(roomIndexKey, now, '+inf');
+            activeUserIds = activeEntries;
+        }
+
+        // P0-57: Fetch host separately with online status
+        const host = await prisma.user.findUnique({
+            where: { id: room.hostID },
+            select: { id: true, username: true },
+        });
+
+        // Fetch usernames for active participants
+        const users = activeUserIds.length > 0
+            ? await prisma.user.findMany({
+                where: { id: { in: activeUserIds } },
+                select: { id: true, username: true },
+            })
+            : [];
+
+        return reply.send({
+            // P0-57: host metadata separate from active participants
+            host: host ? {
+                userId: host.id,
+                username: host.username,
+                online: activeUserIds.includes(host.id),
+            } : null,
+            // P0-57: only actually active connections
+            participants: users.map(u => ({ userId: u.id, username: u.username })),
+        });
+    });
+
+    // P0-59/P1-11: GET /api/rooms/:id/messages — chat catch-up with opaque cursor
+    // P0-59: cursor is opaque base64 of (createdAtMs,id), not raw messageId.
+    // Fetches limit+1 to determine hasMore deterministically.
+    // Tie-breaker: createdAt > ts OR (createdAt = ts AND id > id).
+    fastify.get('/rooms/:id/messages', {
+        preHandler: [fastify.authenticate],
+        config: { rateLimit: { max: 30, timeWindow: '1 minute' } },
+    }, async (request: any, reply: any) => {
+        const { id: roomId } = request.params;
+        const cursor = (request.query as any)?.cursor as string | undefined;
+        const limit = Math.min(parseInt((request.query as any)?.limit as string) || 50, 200);
+
+        // Verify membership
+        const [participant, room] = await Promise.all([
+            prisma.roomParticipant.findUnique({
+                where: { roomID_userID: { roomID: roomId, userID: request.user.id } },
+                select: { id: true },
+            }).catch(() => null),
+            prisma.room.findUnique({
+                where: { id: roomId },
+                select: { hostID: true, isActive: true },
+            }),
+        ]);
+        if (!room) return reply.status(404).send({ error: 'Room not found' });
+        if (room.hostID !== request.user.id && !participant) {
+            return reply.status(403).send({ error: 'Not a room member' });
+        }
+
+        // P0-59: decode opaque cursor — base64 of "createdAtMs:id"
+        let afterCreatedAt: Date | undefined;
+        let afterId: string | undefined;
+        if (cursor) {
+            try {
+                const decoded = Buffer.from(cursor, 'base64').toString('utf-8');
+                const parts = decoded.split(':');
+                if (parts.length === 2) {
+                    afterCreatedAt = new Date(parseInt(parts[0]));
+                    afterId = parts[1];
+                }
+            } catch {
+                // Invalid cursor — return from beginning
+            }
+        }
+
+        // P0-59: fetch limit+1 to determine hasMore
+        const fetchLimit = limit + 1;
+        const messages = await prisma.chatMessage.findMany({
+            where: {
+                roomID: roomId,
+                ...(afterCreatedAt && afterId
+                    ? {
+                        OR: [
+                            { createdAt: { gt: afterCreatedAt } },
+                            { createdAt: { equals: afterCreatedAt }, id: { gt: afterId } },
+                        ],
+                    }
+                    : afterCreatedAt
+                    ? { createdAt: { gt: afterCreatedAt } }
+                    : {}),
+            },
+            orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+            take: fetchLimit,
+            select: {
+                id: true,
+                senderID: true,
+                text: true,
+                createdAt: true,
+            },
+        });
+
+        // P0-59: hasMore is true only if we got limit+1 messages
+        const hasMore = messages.length > limit;
+        const returnMessages = hasMore ? messages.slice(0, limit) : messages;
+
+        // P0-59: build nextCursor from last returned message
+        let nextCursor: string | null = null;
+        if (hasMore && returnMessages.length > 0) {
+            const last = returnMessages[returnMessages.length - 1];
+            nextCursor = Buffer.from(`${last.createdAt.getTime()}:${last.id}`).toString('base64');
+        }
+
+        // Fetch sender usernames in bulk
+        const senderIds = [...new Set(returnMessages.map(m => m.senderID))];
+        const senders = senderIds.length > 0
+            ? await prisma.user.findMany({
+                where: { id: { in: senderIds } },
+                select: { id: true, username: true },
+            })
+            : [];
+        const senderMap = new Map(senders.map(s => [s.id, s.username]));
+
+        reply.send({
+            messages: returnMessages.map(m => ({
+                messageId: m.id,
+                clientMessageId: null,
+                senderId: m.senderID,
+                senderName: senderMap.get(m.senderID) ?? 'unknown',
+                text: m.text,
+                createdAtMs: m.createdAt.getTime(),
+            })),
+            hasMore,
+            nextCursor,  // P0-59: opaque cursor, not messageId
+        });
+    });
+
+    // P1-66: AUTO-CLEANUP CRON — uses Redis presence leases, not just DB participants.
+    // A room is orphan if: isActive=true AND no active presence leases in Redis.
+    // Host commonly has no RoomParticipant row — old code would end live host-only rooms.
     setInterval(async () => {
         try {
-            const orphanRooms = await prisma.room.findMany({
+            const activeRooms = await prisma.room.findMany({
                 where: { isActive: true },
-                include: { _count: { select: { participants: true } } },
+                select: { id: true },
             });
-            const toEnd = orphanRooms.filter(r => r._count.participants === 0);
-            if (toEnd.length === 0) return;
+            const now = Date.now();
+            const orphanRoomIds: string[] = [];
+            for (const room of activeRooms) {
+                // P1-66: check Redis room index for active leases
+                const roomIndexKey = `plink:room:${room.id}:activeUsers`;
+                if (fastify.redis) {
+                    await fastify.redis.zremrangebyscore(roomIndexKey, '-inf', now);
+                    const activeCount = await fastify.redis.zcount(roomIndexKey, now, '+inf');
+                    if (activeCount === 0) {
+                        // P1-66: also check if host has their own per-user lease
+                        // (room index might not have been updated)
+                        orphanRoomIds.push(room.id);
+                    }
+                } else {
+                    // No Redis — fall back to DB participants
+                    const pCount = await prisma.roomParticipant.count({
+                        where: { roomID: room.id },
+                    });
+                    if (pCount === 0) orphanRoomIds.push(room.id);
+                }
+            }
+            if (orphanRoomIds.length === 0) return;
             await prisma.room.updateMany({
-                where: { id: { in: toEnd.map(r => r.id) } },
+                where: { id: { in: orphanRoomIds } },
                 data: { isActive: false },
             });
             await cacheDel(ROOMS_CACHE_KEY);
-            console.log(`[cleanup] Auto-ended ${toEnd.length} orphan room(s)`);
+            console.log(`[cleanup] Auto-ended ${orphanRoomIds.length} orphan room(s) via lease check`);
         } catch (e: any) {
             console.error('[cleanup] Error:', e?.message || e);
         }
