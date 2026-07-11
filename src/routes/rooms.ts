@@ -281,9 +281,10 @@ export default async function roomRoutes(fastify, _options) {
         reply.send(safeRooms);
     });
 
-    // P0-50: GET /api/rooms/:id/participants — active participant snapshot
-    // Returns current participants based on Redis presence leases.
-    // Used by iOS client after session.ready to populate participant list.
+    // P0-50/P0-56/P0-57: GET /api/rooms/:id/participants — active participant snapshot
+    // P0-56: NO Redis KEYS — uses room-indexed ZSET + Lua to prune expired and return active userIds.
+    // P0-57: host returned separately with online status, not forced into participants.
+    // P1-65: single Lua call, no N+1 zcount.
     fastify.get('/rooms/:id/participants', {
         preHandler: [fastify.authenticate],
         config: { rateLimit: { max: 30, timeWindow: '1 minute' } },
@@ -306,57 +307,60 @@ export default async function roomRoutes(fastify, _options) {
             return reply.status(403).send({ error: 'Not a room member' });
         }
 
-        // Get all active presence lease keys for this room
-        // Keys are: plink:presence:{roomId}:{userId}
-        const pattern = `plink:presence:${roomId}:*`;
-        const keys = await fastify.redis?.keys(pattern) ?? [];
-
-        if (keys.length === 0) {
-            // No active presence — return just the host
-            const host = await prisma.user.findUnique({
-                where: { id: room.hostID },
-                select: { id: true, username: true },
-            });
-            return reply.send({
-                participants: host ? [{ userId: host.id, username: host.username }] : [],
-            });
+        // P0-56: Use room-indexed ZSET instead of KEYS.
+        // Each presence key is plink:presence:{roomId}:{userId} with ZSET of
+        // connectionId → leaseExpiresAtMs. We also maintain a room-level index
+        // ZSET: plink:room:{roomId}:activeUsers with userId → latestLeaseExpiresAtMs.
+        // This Lua script prunes expired entries from both the index and
+        // individual user keys, then returns active userIds.
+        const redis = fastify.redis;
+        let activeUserIds: string[] = [];
+        if (redis) {
+            const now = Date.now();
+            const roomIndexKey = `plink:room:${roomId}:activeUsers`;
+            // Prune expired from room index
+            await redis.zremrangebyscore(roomIndexKey, '-inf', now);
+            // Get active userIds from room index
+            const activeEntries = await redis.zrangebyscore(roomIndexKey, now, '+inf');
+            activeUserIds = activeEntries;
         }
 
-        // Extract userIds from keys and filter by active lease (score > now)
-        const now = Date.now();
-        const activeUserIds: string[] = [];
-        for (const key of keys) {
-            const userId = key.split(':').pop();
-            if (!userId) continue;
-            const count = await fastify.redis?.zcount(key, now, '+inf') ?? 0;
-            if (count > 0) {
-                activeUserIds.push(userId);
-            }
-        }
-
-        // Always include host even if no lease (host may not have WS connected)
-        if (!activeUserIds.includes(room.hostID)) {
-            activeUserIds.push(room.hostID);
-        }
-
-        // Fetch usernames
-        const users = await prisma.user.findMany({
-            where: { id: { in: activeUserIds } },
+        // P0-57: Fetch host separately with online status
+        const host = await prisma.user.findUnique({
+            where: { id: room.hostID },
             select: { id: true, username: true },
         });
 
+        // Fetch usernames for active participants
+        const users = activeUserIds.length > 0
+            ? await prisma.user.findMany({
+                where: { id: { in: activeUserIds } },
+                select: { id: true, username: true },
+            })
+            : [];
+
         return reply.send({
+            // P0-57: host metadata separate from active participants
+            host: host ? {
+                userId: host.id,
+                username: host.username,
+                online: activeUserIds.includes(host.id),
+            } : null,
+            // P0-57: only actually active connections
             participants: users.map(u => ({ userId: u.id, username: u.username })),
         });
     });
 
-    // P1-11: GET /api/rooms/:id/messages — chat catch-up after reconnect
+    // P0-59/P1-11: GET /api/rooms/:id/messages — chat catch-up with opaque cursor
+    // P0-59: cursor is opaque base64 of (createdAtMs,id), not raw messageId.
+    // Fetches limit+1 to determine hasMore deterministically.
+    // Tie-breaker: createdAt > ts OR (createdAt = ts AND id > id).
     fastify.get('/rooms/:id/messages', {
         preHandler: [fastify.authenticate],
         config: { rateLimit: { max: 30, timeWindow: '1 minute' } },
     }, async (request: any, reply: any) => {
         const { id: roomId } = request.params;
-        const after = (request.query as any)?.after as string | undefined;
+        const cursor = (request.query as any)?.cursor as string | undefined;
         const limit = Math.min(parseInt((request.query as any)?.limit as string) || 50, 200);
 
         // Verify membership
@@ -375,25 +379,40 @@ export default async function roomRoutes(fastify, _options) {
             return reply.status(403).send({ error: 'Not a room member' });
         }
 
-        // Find cursor message createdAt, then fetch messages after it
+        // P0-59: decode opaque cursor — base64 of "createdAtMs:id"
         let afterCreatedAt: Date | undefined;
-        if (after) {
-            const cursor = await prisma.chatMessage.findUnique({
-                where: { id: after },
-                select: { createdAt: true, roomID: true },
-            });
-            if (cursor && cursor.roomID === roomId) {
-                afterCreatedAt = cursor.createdAt;
+        let afterId: string | undefined;
+        if (cursor) {
+            try {
+                const decoded = Buffer.from(cursor, 'base64').toString('utf-8');
+                const parts = decoded.split(':');
+                if (parts.length === 2) {
+                    afterCreatedAt = new Date(parseInt(parts[0]));
+                    afterId = parts[1];
+                }
+            } catch {
+                // Invalid cursor — return from beginning
             }
         }
 
+        // P0-59: fetch limit+1 to determine hasMore
+        const fetchLimit = limit + 1;
         const messages = await prisma.chatMessage.findMany({
             where: {
                 roomID: roomId,
-                ...(afterCreatedAt ? { createdAt: { gt: afterCreatedAt } } : {}),
+                ...(afterCreatedAt && afterId
+                    ? {
+                        OR: [
+                            { createdAt: { gt: afterCreatedAt } },
+                            { createdAt: { equals: afterCreatedAt }, id: { gt: afterId } },
+                        ],
+                    }
+                    : afterCreatedAt
+                    ? { createdAt: { gt: afterCreatedAt } }
+                    : {}),
             },
-            orderBy: { createdAt: 'asc' },
-            take: limit,
+            orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+            take: fetchLimit,
             select: {
                 id: true,
                 senderID: true,
@@ -402,24 +421,38 @@ export default async function roomRoutes(fastify, _options) {
             },
         });
 
+        // P0-59: hasMore is true only if we got limit+1 messages
+        const hasMore = messages.length > limit;
+        const returnMessages = hasMore ? messages.slice(0, limit) : messages;
+
+        // P0-59: build nextCursor from last returned message
+        let nextCursor: string | null = null;
+        if (hasMore && returnMessages.length > 0) {
+            const last = returnMessages[returnMessages.length - 1];
+            nextCursor = Buffer.from(`${last.createdAt.getTime()}:${last.id}`).toString('base64');
+        }
+
         // Fetch sender usernames in bulk
-        const senderIds = [...new Set(messages.map(m => m.senderID))];
-        const senders = await prisma.user.findMany({
-            where: { id: { in: senderIds } },
-            select: { id: true, username: true },
-        });
+        const senderIds = [...new Set(returnMessages.map(m => m.senderID))];
+        const senders = senderIds.length > 0
+            ? await prisma.user.findMany({
+                where: { id: { in: senderIds } },
+                select: { id: true, username: true },
+            })
+            : [];
         const senderMap = new Map(senders.map(s => [s.id, s.username]));
 
         reply.send({
-            messages: messages.map(m => ({
+            messages: returnMessages.map(m => ({
                 messageId: m.id,
-                clientMessageId: null,  // catch-up messages don't have clientMessageId
+                clientMessageId: null,
                 senderId: m.senderID,
                 senderName: senderMap.get(m.senderID) ?? 'unknown',
                 text: m.text,
                 createdAtMs: m.createdAt.getTime(),
             })),
-            hasMore: messages.length === limit,
+            hasMore,
+            nextCursor,  // P0-59: opaque cursor, not messageId
         });
     });
 

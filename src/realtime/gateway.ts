@@ -338,15 +338,18 @@ export class RealtimeGateway {
   private async bumpRoomPresence(roomId: string, userId: string): Promise<{ count: number; connectionId: string }> {
     const connectionId = randomUUID();
     const key = RealtimeGateway.PRESENCE_LEASE_KEY(roomId, userId);
+    const roomIndexKey = `plink:room:${roomId}:activeUsers`;
     const now = Date.now();
     const expiresAt = now + RealtimeGateway.PRESENCE_LEASE_TTL_MS;
-    // Remove expired members, add new connection, count active
-    // Using ZADD with GT/chg flags + ZREMRANGEBYSCORE for expired
+    // P0-56: maintain BOTH per-user ZSET and room-level index ZSET
     const pipeline = this.deps.redis.multi();
-    pipeline.zremrangebyscore(key, '-inf', now);  // remove expired
-    pipeline.zadd(key, expiresAt, connectionId);
-    pipeline.pexpire(key, RealtimeGateway.PRESENCE_LEASE_TTL_MS * 2);  // key TTL = 2x lease
-    pipeline.zcount(key, now, '+inf');  // count active connections
+    pipeline.zremrangebyscore(key, '-inf', now);  // remove expired from user key
+    pipeline.zadd(key, expiresAt, connectionId);   // add new connection
+    pipeline.pexpire(key, RealtimeGateway.PRESENCE_LEASE_TTL_MS * 2);
+    pipeline.zcount(key, now, '+inf');              // count active connections
+    // P0-56: update room-level index — userId → latestLeaseExpiresAtMs
+    pipeline.zadd(roomIndexKey, expiresAt, userId);
+    pipeline.pexpire(roomIndexKey, RealtimeGateway.PRESENCE_LEASE_TTL_MS * 2);
     const results = await pipeline.exec();
     const count = results ? Number(results[3][1]) : 0;
     return { count, connectionId };
@@ -354,16 +357,25 @@ export class RealtimeGateway {
 
   private async decrementRoomPresence(roomId: string, userId: string, connectionId?: string): Promise<number> {
     const key = RealtimeGateway.PRESENCE_LEASE_KEY(roomId, userId);
+    const roomIndexKey = `plink:room:${roomId}:activeUsers`;
     const now = Date.now();
     if (connectionId) {
       await this.deps.redis.zrem(key, connectionId);
     } else {
-      // Fallback: no connectionId (shouldn't happen with P0-24)
       await this.deps.redis.zremrangebyscore(key, '-inf', '+inf');
     }
     const count = await this.deps.redis.zcount(key, now, '+inf');
     if (count === 0) {
       await this.deps.redis.del(key);
+      // P0-56: remove from room index when no active connections
+      await this.deps.redis.zrem(roomIndexKey, userId);
+    } else {
+      // P0-56: update room index with latest expiry from remaining connections
+      const remaining = await this.deps.redis.zrange(key, now, '+inf', 'BYSCORE', 'WITHSCORES');
+      if (remaining.length >= 2) {
+        const maxExpiry = Math.max(...remaining.filter((_, i) => i % 2 === 1).map(Number));
+        await this.deps.redis.zadd(roomIndexKey, maxExpiry, userId);
+      }
     }
     return count;
   }
@@ -371,9 +383,15 @@ export class RealtimeGateway {
   // P0-24: refresh presence lease on heartbeat — called from Heartbeat class
   async refreshPresenceLease(roomId: string, userId: string, connectionId: string): Promise<void> {
     const key = RealtimeGateway.PRESENCE_LEASE_KEY(roomId, userId);
+    const roomIndexKey = `plink:room:${roomId}:activeUsers`;
     const expiresAt = Date.now() + RealtimeGateway.PRESENCE_LEASE_TTL_MS;
-    await this.deps.redis.zadd(key, expiresAt, connectionId);
-    await this.deps.redis.pexpire(key, RealtimeGateway.PRESENCE_LEASE_TTL_MS * 2);
+    // P0-56: refresh BOTH per-user ZSET and room-level index
+    const pipeline = this.deps.redis.multi();
+    pipeline.zadd(key, expiresAt, connectionId);
+    pipeline.pexpire(key, RealtimeGateway.PRESENCE_LEASE_TTL_MS * 2);
+    pipeline.zadd(roomIndexKey, expiresAt, userId);
+    pipeline.pexpire(roomIndexKey, RealtimeGateway.PRESENCE_LEASE_TTL_MS * 2);
+    await pipeline.exec();
   }
 
   // ── P0-2: ref-counted room listeners ───────────────────────────────────
