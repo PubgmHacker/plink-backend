@@ -33,6 +33,8 @@ import billingRoutes from './routes/billing.js';
 import gdprRoutes from './routes/gdpr.js';
 import featureFlagRoutes from './routes/featureFlags.js';
 import aiRoutes from './routes/ai.js';
+import { livekitRoutes } from "./routes/livekit.js";
+import { roomJoinDuration, syncDrift, syncHardCorrections, wsReconnectCount, presenceLeaseCount } from "./observability/slo-metrics.js";
 import { realtimeTicketRoutes } from './routes/realtime.js';
 import { legacyStreamRelayRoutes, shouldRegisterLegacyRelay } from './routes/legacy/legacyStreamRelay.js';
 
@@ -119,6 +121,7 @@ export async function buildApp(): Promise<{
   await fastify.register(gdprRoutes, { prefix: '/api' });
   await fastify.register(featureFlagRoutes, { prefix: '/api' });
   await fastify.register(aiRoutes, { prefix: '/api' });
+await fastify.register(livekitRoutes, { prefix: '/api' });  // Stage 9
   await fastify.register(realtimeTicketRoutes, { prefix: '/api' });
 
   // ── LEGACY stream relay (gated — App Store compliant builds skip) ──────
