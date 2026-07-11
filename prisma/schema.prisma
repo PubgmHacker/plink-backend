@@ -165,7 +165,9 @@ model PlaybackState {
   isPlaying   Boolean  @default(false)
   updatedAt   DateTime @updatedAt
 
-  @@unique([roomID, userID])
+  // P1-39: removed @@unique([roomID, userID]) from schema — migration uses
+  // partial unique indexes instead (WHERE userID IS NOT NULL / IS NULL).
+  // Prisma migrate diff now produces empty diff against fresh DB.
   @@index([roomID, updatedAt])
 }
 
