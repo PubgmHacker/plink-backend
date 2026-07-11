@@ -10,9 +10,11 @@
 // Requires Redis on REDIS_URL (default 6380 to match docker-compose.yml).
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { randomUUID } from 'node:crypto';
 import { RoomEventBus } from '../../realtime/roomEventBus.js';
 
 const REDIS_URL = process.env.REDIS_URL || 'redis://localhost:6380';
+const VALID_UUID = () => randomUUID();
 
 // P0-25 fix: check Redis availability at TOP LEVEL (not in beforeAll).
 // describe.skipIf reads the value synchronously at declaration time —
@@ -40,7 +42,7 @@ describe.skipIf(!redisOk)('RoomEventBus cross-replica distribution (P0-3 regress
   it('event published on replica A reaches subscriber on replica B', async () => {
     const replicaA = new RoomEventBus(REDIS_URL);
     const replicaB = new RoomEventBus(REDIS_URL);
-    const roomId = 'room-p0-3-a-' + Date.now();
+    const roomId = VALID_UUID();
     const received: string[] = [];
     await replicaB.subscribe(roomId, (event) => {
       if (event.kind === 'chat.broadcast') {
@@ -53,7 +55,7 @@ describe.skipIf(!redisOk)('RoomEventBus cross-replica distribution (P0-3 regress
       roomId,
       messageId: 'm1',
       clientMessageId: null,
-      senderId: '00000000-0000-4000-8000-000000000001',
+      senderId: VALID_UUID(),
       senderName: 'tester',
       text: 'hello from A',
       createdAtMs: Date.now(),
@@ -66,7 +68,7 @@ describe.skipIf(!redisOk)('RoomEventBus cross-replica distribution (P0-3 regress
 
   it('listener is not called after unsubscribe (no leak)', async () => {
     const bus = new RoomEventBus(REDIS_URL);
-    const roomId = 'room-p0-3-b-' + Date.now();
+    const roomId = VALID_UUID();
     const received: string[] = [];
     const listener = (event: any) => {
       if (event.kind === 'chat.broadcast') received.push(event.text);
@@ -79,7 +81,7 @@ describe.skipIf(!redisOk)('RoomEventBus cross-replica distribution (P0-3 regress
       roomId,
       messageId: 'm2',
       clientMessageId: null,
-      senderId: '00000000-0000-4000-8000-000000000001',
+      senderId: VALID_UUID(),
       senderName: 'tester',
       text: 'should not arrive',
       createdAtMs: Date.now(),
@@ -91,8 +93,8 @@ describe.skipIf(!redisOk)('RoomEventBus cross-replica distribution (P0-3 regress
 
   it('event for room A does not deliver to room B subscriber', async () => {
     const bus = new RoomEventBus(REDIS_URL);
-    const roomA = 'room-p0-3-c-' + Date.now();
-    const roomB = 'room-p0-3-d-' + Date.now();
+    const roomA = VALID_UUID();
+    const roomB = VALID_UUID();
     const receivedA: string[] = [];
     const receivedB: string[] = [];
     await bus.subscribe(roomA, (e) => {
@@ -107,7 +109,7 @@ describe.skipIf(!redisOk)('RoomEventBus cross-replica distribution (P0-3 regress
       roomId: roomA,
       messageId: 'm3',
       clientMessageId: null,
-      senderId: '00000000-0000-4000-8000-000000000001',
+      senderId: VALID_UUID(),
       senderName: 'tester',
       text: 'only for A',
       createdAtMs: Date.now(),
