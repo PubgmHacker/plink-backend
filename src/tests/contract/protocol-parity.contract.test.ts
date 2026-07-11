@@ -27,6 +27,7 @@ const SWIFT_HANDLED_TYPES = new Set([
   'participant.left',
   'error',
   'session.ready',
+  'role.changed',  // P1-64
   'server.draining',
 ]);
 

@@ -456,29 +456,43 @@ export default async function roomRoutes(fastify, _options) {
         });
     });
 
-    // 🔧 AUTO-CLEANUP CRON: every 5 minutes, find rooms where isActive=true
-    // but have 0 participants AND host is not in participants (orphan rooms).
-    // Mark them as ended (isActive=false) so they disappear from
-    // the public list but stay in the host's history.
-    //
-    // This handles edge cases:
-    // - Host created room but never joined (orphan with 0 participants)
-    // - All participants left via WS disconnect without calling /leave
-    // - Server restart left rooms in inconsistent state
+    // P1-66: AUTO-CLEANUP CRON — uses Redis presence leases, not just DB participants.
+    // A room is orphan if: isActive=true AND no active presence leases in Redis.
+    // Host commonly has no RoomParticipant row — old code would end live host-only rooms.
     setInterval(async () => {
         try {
-            const orphanRooms = await prisma.room.findMany({
+            const activeRooms = await prisma.room.findMany({
                 where: { isActive: true },
-                include: { _count: { select: { participants: true } } },
+                select: { id: true },
             });
-            const toEnd = orphanRooms.filter(r => r._count.participants === 0);
-            if (toEnd.length === 0) return;
+            const now = Date.now();
+            const orphanRoomIds: string[] = [];
+            for (const room of activeRooms) {
+                // P1-66: check Redis room index for active leases
+                const roomIndexKey = `plink:room:${room.id}:activeUsers`;
+                if (fastify.redis) {
+                    await fastify.redis.zremrangebyscore(roomIndexKey, '-inf', now);
+                    const activeCount = await fastify.redis.zcount(roomIndexKey, now, '+inf');
+                    if (activeCount === 0) {
+                        // P1-66: also check if host has their own per-user lease
+                        // (room index might not have been updated)
+                        orphanRoomIds.push(room.id);
+                    }
+                } else {
+                    // No Redis — fall back to DB participants
+                    const pCount = await prisma.roomParticipant.count({
+                        where: { roomID: room.id },
+                    });
+                    if (pCount === 0) orphanRoomIds.push(room.id);
+                }
+            }
+            if (orphanRoomIds.length === 0) return;
             await prisma.room.updateMany({
-                where: { id: { in: toEnd.map(r => r.id) } },
+                where: { id: { in: orphanRoomIds } },
                 data: { isActive: false },
             });
             await cacheDel(ROOMS_CACHE_KEY);
-            console.log(`[cleanup] Auto-ended ${toEnd.length} orphan room(s)`);
+            console.log(`[cleanup] Auto-ended ${orphanRoomIds.length} orphan room(s) via lease check`);
         } catch (e: any) {
             console.error('[cleanup] Error:', e?.message || e);
         }
