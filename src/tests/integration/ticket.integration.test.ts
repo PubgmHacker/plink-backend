@@ -13,7 +13,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import Redis from 'ioredis';
 import { randomUUID } from 'node:crypto';
 
-const REDIS_URL = process.env.REDIS_URL || 'redis://localhost:6379';
+const REDIS_URL = process.env.REDIS_URL || 'redis://localhost:6380';
 let redis: Redis;
 let redisAvailable = false;
 

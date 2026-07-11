@@ -14,7 +14,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import Redis from 'ioredis';
 import { RoomStateStore } from '../../realtime/roomStateStore.js';
 
-const REDIS_URL = process.env.REDIS_URL || 'redis://localhost:6379';
+const REDIS_URL = process.env.REDIS_URL || 'redis://localhost:6380';
 let redis: Redis;
 let store: RoomStateStore;
 let redisAvailable = false;
