@@ -56,10 +56,13 @@ model User {
   blockedUsers     UserBlock[]       @relation("Blocker")
   blockedBy        UserBlock[]       @relation("Blocked")
   reports          Report[]          @relation("Reporter")
+  reportsResolved  Report[]          @relation("Resolver")
   refreshTokens    RefreshToken[]
   auditLogs        AuditLog[]
   referralsMade    Referral[] @relation("Referrer")
   referralReceived Referral?  @relation("Referred")
+  // PATCH 16: App Store Server API V2 transaction records
+  transactions     TransactionRecord[]
 }
 
 model Room {
@@ -172,13 +175,40 @@ model PlaybackState {
 }
 
 model Subscription {
-  id        String   @id @default(uuid())
-  userID    String
-  user      User     @relation(fields: [userID], references: [id])
-  plan      String   @default("monthly")
-  isActive  Boolean  @default(true)
-  expiresAt DateTime
-  createdAt DateTime @default(now())
+  id                    String   @id @default(uuid())
+  userID                String
+  user                  User     @relation(fields: [userID], references: [id])
+  plan                  String   @default("monthly")
+  isActive              Boolean  @default(true)
+  expiresAt             DateTime
+  createdAt             DateTime @default(now())
+  // PATCH 16: App Store Server API V2 fields
+  originalTransactionId String?  // stable across renewals
+  environment           String?  // "Sandbox" | "Production"
+  revokedAt             DateTime?
+  lastVerifiedAt        DateTime?
+  @@index([userID, isActive])
+  @@index([originalTransactionId])
+}
+
+/// PATCH 16: Signed transaction records (JWS) from App Store Server API V2.
+/// One row per verified transaction. Used for audit trail + revocation.
+model TransactionRecord {
+  id                    String   @id @default(uuid())
+  userId                String
+  user                  User     @relation(fields: [userId], references: [id])
+  transactionId         String   @unique  // stable per transaction
+  originalTransactionId String
+  productId             String
+  environment           String   // "Sandbox" | "Production"
+  jws                   String   @db.Text  // signed JWS from Apple
+  expiresAt             DateTime?
+  revocationDate        DateTime?
+  verifiedAt            DateTime @default(now())
+  createdAt             DateTime @default(now())
+  @@index([userId, createdAt])
+  @@index([originalTransactionId])
+  @@index([productId])
 }
 
 model UserBlock {
@@ -193,13 +223,19 @@ model UserBlock {
 }
 
 model Report {
-  id          String @id @default(uuid())
+  id          String   @id @default(uuid())
   reporterID  String
-  reporter    User   @relation("Reporter", fields: [reporterID], references: [id])
+  reporter    User     @relation("Reporter", fields: [reporterID], references: [id])
   roomID      String?
-  reportedRoom Room? @relation("ReportedRoom", fields: [roomID], references: [id])
+  reportedRoom Room?   @relation("ReportedRoom", fields: [roomID], references: [id])
   reason      String
+  status      String   @default("pending")  // pending | resolved | dismissed
   createdAt   DateTime @default(now())
+  resolvedAt  DateTime?
+  resolvedBy  String?
+  resolver    User?    @relation("Resolver", fields: [resolvedBy], references: [id], onDelete: SetNull)
+
+  @@index([status, createdAt])
 }
 
 model RefreshToken {
