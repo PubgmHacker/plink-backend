@@ -8,8 +8,6 @@
 #   npx vitest run src/tests/integration/
 #   docker compose -f tests/integration/docker-compose.yml down -v
 
-version: '3.9'
-
 services:
   postgres:
     image: postgres:16-alpine
