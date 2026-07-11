@@ -35,9 +35,9 @@ import { JoseConfig } from '../utils/jose-config.js';
 
 // Premium plans — product IDs match iOS PlinkProductID enum.
 const PLANS: Record<string, { tier: 'premium' | 'lifetime'; durationDays: number }> = {
-  'com.syncwatch.plink.premium.monthly':  { tier: 'premium',  durationDays: 30 },
-  'com.syncwatch.plink.premium.yearly':   { tier: 'premium',  durationDays: 365 },
-  'com.syncwatch.plink.premium.lifetime': { tier: 'lifetime', durationDays: 36500 },
+  'plink.plus.1m':  { tier: 'premium',  durationDays: 30 },
+  'plink.plus.3m':  { tier: 'premium',  durationDays: 90 },
+  'plink.plus.12m': { tier: 'premium',  durationDays: 365 },
 };
 
 export default async function billingRoutes(fastify: any) {
