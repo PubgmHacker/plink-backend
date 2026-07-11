@@ -4,20 +4,25 @@
 // Verifies:
 //   - published event reaches subscriber on same replica
 //   - published event reaches subscriber on a SECOND subscriber instance
-//     (simulating a second replica)
 //   - listener is NOT called after unsubscribe (leak prevention)
 //   - publishing to room A does NOT deliver to room B subscriber
 //
-// Requires Redis on REDIS_URL.
+// Requires Redis on REDIS_URL (default 6380 to match docker-compose.yml).
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { RoomEventBus } from '../../realtime/roomEventBus.js';
 
 const REDIS_URL = process.env.REDIS_URL || 'redis://localhost:6380';
-let redisOk = false;
 
-beforeAll(async () => {
-  try {
+// P0-25 fix: check Redis availability at TOP LEVEL (not in beforeAll).
+// describe.skipIf reads the value synchronously at declaration time —
+// beforeAll runs later, so redisOk would still be false.
+// Top-level IIFE sets redisOk before describe.skipIf is evaluated.
+let redisOk = false;
+try {
+  // Synchronous probe — use a child process or just try ioredis synchronously
+  // ioredis is async, so we use a top-level await via IIFE
+  await (async () => {
     const probe = new (await import('ioredis')).default(REDIS_URL, {
       maxRetriesPerRequest: 1,
       lazyConnect: true,
@@ -26,10 +31,10 @@ beforeAll(async () => {
     await probe.ping();
     await probe.quit();
     redisOk = true;
-  } catch {
-    redisOk = false;
-  }
-});
+  })();
+} catch {
+  redisOk = false;
+}
 
 describe.skipIf(!redisOk)('RoomEventBus cross-replica distribution (P0-3 regression)', () => {
   it('event published on replica A reaches subscriber on replica B', async () => {
@@ -42,7 +47,6 @@ describe.skipIf(!redisOk)('RoomEventBus cross-replica distribution (P0-3 regress
         received.push(event.text);
       }
     });
-    // Give subscriber a moment to register
     await new Promise((r) => setTimeout(r, 100));
     await replicaA.publish(roomId, {
       kind: 'chat.broadcast',
@@ -54,7 +58,6 @@ describe.skipIf(!redisOk)('RoomEventBus cross-replica distribution (P0-3 regress
       text: 'hello from A',
       createdAtMs: Date.now(),
     });
-    // Allow pub/sub propagation
     await new Promise((r) => setTimeout(r, 200));
     expect(received).toEqual(['hello from A']);
     await replicaA.close();

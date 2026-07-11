@@ -7,29 +7,29 @@
 //   - Late join получает актуальное media state
 //   - stateRequest возвращает state
 //
-// Requires a running Redis on REDIS_URL (or redis-server available locally).
-// Skips automatically if Redis is not reachable.
+// Requires a running Redis on REDIS_URL (default 6380 to match docker-compose).
 
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { describe, it, expect, afterAll, beforeEach } from 'vitest';
 import Redis from 'ioredis';
 import { RoomStateStore } from '../../realtime/roomStateStore.js';
 
 const REDIS_URL = process.env.REDIS_URL || 'redis://localhost:6380';
 let redis: Redis;
 let store: RoomStateStore;
-let redisAvailable = false;
 
-beforeAll(async () => {
-  try {
+// Top-level Redis availability check (fixes skipIf race with beforeAll)
+let redisAvailable = false;
+try {
+  await (async () => {
     redis = new Redis(REDIS_URL, { maxRetriesPerRequest: 1, lazyConnect: true });
     await redis.connect();
     await redis.ping();
-    redisAvailable = true;
     store = new RoomStateStore(redis);
-  } catch {
-    redisAvailable = false;
-  }
-});
+    redisAvailable = true;
+  })();
+} catch {
+  redisAvailable = false;
+}
 
 afterAll(async () => {
   if (redis) await redis.quit().catch(() => {});
@@ -37,9 +37,7 @@ afterAll(async () => {
 
 beforeEach(async () => {
   if (!redisAvailable) return;
-  // Clean test room keys
   await redis.del('room:test-room:state');
-  // Clear action tombstones (wildcard — we don't know actionIds ahead of time)
   const keys = await redis.keys('room:test-room:action:*');
   if (keys.length > 0) await redis.del(...keys);
 });
@@ -81,18 +79,18 @@ describe.skipIf(!redisAvailable)('RoomStateStore integration', () => {
     });
     const second = await store.apply({
       roomId: ROOM_ID,
-      actionId, // ← same
+      actionId,
       epoch: 1,
       mediaId: null,
-      positionMs: 9999, // different payload, must be ignored
+      positionMs: 9999,
       playing: true,
       rate: 1,
       issuedBy: USER_ID,
     });
     expect(second.kind).toBe('replay');
     if (second.kind === 'replay' && second.state) {
-      expect(second.state.seq).toBe(1); // unchanged
-      expect(second.state.positionMs).toBe(5000); // original
+      expect(second.state.seq).toBe(1);
+      expect(second.state.positionMs).toBe(5000);
     }
   });
 
@@ -110,7 +108,7 @@ describe.skipIf(!redisAvailable)('RoomStateStore integration', () => {
     const result = await store.apply({
       roomId: ROOM_ID,
       actionId: '00000000-0000-4000-8000-000000000004',
-      epoch: 4, // ← stale
+      epoch: 4,
       mediaId: null,
       positionMs: 0,
       playing: true,
