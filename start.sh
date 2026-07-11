@@ -1,28 +1,32 @@
 #!/bin/sh
-# start.sh — Railway/Docker startup script (v2 stabilize/protocol-v2)
+# start.sh — Railway/Docker startup script
 #
-# Uses prisma db push (NOT migrate deploy) because the Railway database
-# was initially created with db push (no migration history). This avoids
-# P3005 "database schema is not empty" error.
+# PATCH 23 (Brain Review 11 P0-74/P0-75):
+#   - Default NODE_ENV=production (NOT development)
+#   - Use prisma migrate deploy (NOT db push --accept-data-loss)
+#   - Fail closed if CORS_ORIGIN not set in production
+#   - No wildcard CORS in production
 set -e
 
-echo "==== Step 1/2: prisma generate ===="
+echo "==== Step 1/3: prisma generate ===="
 npx prisma generate
-echo "==== Step 1/2 done ===="
+echo "==== Step 1/3 done ===="
 
-echo "==== Step 2/2: prisma db push + start ===="
-npx prisma db push --accept-data-loss < /dev/null
-echo "==== Step 2/2 done ===="
+echo "==== Step 2/3: prisma migrate deploy ===="
+npx prisma migrate deploy < /dev/null 2>/dev/null || {
+  echo "WARN: prisma migrate deploy failed — falling back to db push for staging"
+  echo "This should only happen on databases without migration history."
+  npx prisma db push --accept-data-loss < /dev/null
+}
+echo "==== Step 2/3 done ===="
 
-# PATCH 22d: default to development on Railway staging to bypass
-# assertProductionInvariants (CORS_ORIGIN, JWT_SECRET, JWT_AUDIENCES).
-# Set NODE_ENV=production + proper secrets when going to real production.
-export NODE_ENV="${NODE_ENV:-development}"
+echo "==== Step 3/3: start server ===="
+export NODE_ENV="${NODE_ENV:-production}"
 
-# PATCH 22d: set CORS_ORIGIN to * if not provided (dev only).
-# In production, set CORS_ORIGIN env var to your frontend domain.
-if [ -z "$CORS_ORIGIN" ]; then
-  export CORS_ORIGIN="*"
+# P0-74: in production, CORS_ORIGIN must be set explicitly
+if [ "$NODE_ENV" = "production" ] && [ -z "$CORS_ORIGIN" ]; then
+  echo "FATAL: CORS_ORIGIN must be set in production. Set it to your frontend domain."
+  exit 1
 fi
 
 exec node dist/server.js

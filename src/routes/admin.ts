@@ -28,6 +28,7 @@ import { prisma } from '../config/db.js';
 import { logAudit, AuditActions } from '../utils/audit.js';
 
 // Admin role check middleware — must be ADMIN or FOUNDER.
+// P0-76: also require 2FA enabled + recent auth (<=15 min) for destructive actions.
 function requireAdmin(fastify: any) {
   fastify.addHook('preHandler', async (request: any, reply: any) => {
     if (!request.user) {
@@ -42,6 +43,37 @@ function requireAdmin(fastify: any) {
         metadata: { path: request.url, role },
       });
       return reply.status(403).send({ error: 'Admin access required' });
+    }
+
+    // P0-76: 2FA must be enabled for admin actions.
+    // TODO: wire twofaEnabled from JWT claims once 2FA flow is implemented.
+    // For now, skip 2FA check in development mode.
+    if (process.env.NODE_ENV === 'production') {
+      if (!request.user.twofaEnabled) {
+        await logAudit({
+          userId: request.user.id,
+          action: 'admin.2fa_required',
+          ip: request.ip,
+          metadata: { path: request.url },
+        });
+        return reply.status(403).send({ error: '2FA required for admin actions' });
+      }
+    }
+
+    // P0-76: recent auth (<=15 min) for destructive mutations.
+    const destructiveMethods = ['POST', 'PUT', 'PATCH', 'DELETE'];
+    if (destructiveMethods.includes(request.method)) {
+      const authAge = Date.now() - (request.user.iat || 0) * 1000;
+      const maxAgeMs = 15 * 60 * 1000; // 15 minutes
+      if (authAge > maxAgeMs) {
+        await logAudit({
+          userId: request.user.id,
+          action: 'admin.stale_auth',
+          ip: request.ip,
+          metadata: { path: request.url, authAgeMs: authAge },
+        });
+        return reply.status(403).send({ error: 'Recent authentication required for this action' });
+      }
     }
   });
 }
