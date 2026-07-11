@@ -54,34 +54,45 @@ export default async function billingRoutes(fastify: any) {
     preHandler: [fastify.authenticate],
     config: { rateLimit: { max: 5, timeWindow: '1 minute' } },
   }, async (request: any, reply: any) => {
-    const { jws, productId, transactionId } = request.body || {};
+    const { jws } = request.body || {};
 
+    // P0-78: do NOT trust client productId/transactionId — extract from verified JWS.
     if (!jws || typeof jws !== 'string') {
-      return reply.status(400).send({ error: 'jws required' });
-    }
-    if (!productId || !PLANS[productId]) {
-      return reply.status(400).send({ error: 'Invalid productId' });
+      return reply.status(400).send({ error: 'Invalid request' });
     }
 
     try {
-      // Verify JWS signature against Apple root cert.
-      // JoseConfig caches the Apple root cert chain.
       const verified = await JoseConfig.verifySignedTransaction(jws);
       if (!verified) {
         await logAudit({
           userId: request.user.id,
           action: 'billing.verify_failed',
           ip: request.ip,
-          metadata: { productId, reason: 'jws_signature_invalid' },
+          metadata: { reason: 'jws_signature_invalid' },
         });
+        // P0-79: generic error, no internal detail.
         return reply.status(400).send({
           entitlement: { active: false, tier: 'free', expiryDate: null },
-          error: 'JWS signature verification failed',
+          error: 'Verification failed',
         });
       }
 
-      // Extract transaction info from verified payload.
-      const { originalTransactionId, environment, expiresAt, revocationDate } = verified;
+      // P0-78: all fields come from verified JWS, not client body.
+      const { originalTransactionId, environment, expiresAt, revocationDate, productId: verifiedProductId } = verified;
+
+      // P0-78: reject if verified product ID is not in our known plans.
+      if (!verifiedProductId || !PLANS[verifiedProductId]) {
+        await logAudit({
+          userId: request.user.id,
+          action: 'billing.verify_failed',
+          ip: request.ip,
+          metadata: { reason: 'unknown_product', productId: verifiedProductId },
+        });
+        return reply.status(400).send({
+          entitlement: { active: false, tier: 'free', expiryDate: null },
+          error: 'Verification failed',
+        });
+      }
 
       // If revoked, fail closed.
       if (revocationDate) {
@@ -90,7 +101,7 @@ export default async function billingRoutes(fastify: any) {
           userId: request.user.id,
           action: 'billing.revoked',
           ip: request.ip,
-          metadata: { productId, originalTransactionId, revocationDate },
+          metadata: { productId: verifiedProductId, originalTransactionId, revocationDate },
         });
         return reply.status(400).send({
           entitlement: { active: false, tier: 'free', expiryDate: null },
@@ -99,19 +110,19 @@ export default async function billingRoutes(fastify: any) {
       }
 
       // Compute expiry.
-      const plan = PLANS[productId];
+      const plan = PLANS[verifiedProductId];
       const expiryDate = expiresAt
         ? new Date(expiresAt)
         : new Date(Date.now() + plan.durationDays * 24 * 3600 * 1000);
 
       // Store the transaction record (idempotent on transactionId).
       await prisma.transactionRecord.upsert({
-        where: { transactionId: transactionId || originalTransactionId },
+        where: { transactionId: verified.transactionId || originalTransactionId },
         create: {
           userId: request.user.id,
-          transactionId: transactionId || originalTransactionId,
+          transactionId: verified.transactionId || originalTransactionId,
           originalTransactionId,
-          productId,
+          productId: verifiedProductId,
           environment,
           jws,
           expiresAt: expiryDate,
@@ -130,7 +141,7 @@ export default async function billingRoutes(fastify: any) {
         where: { id: originalTransactionId },
         create: {
           userID: request.user.id,
-          plan: productId,
+          plan: verifiedProductId,
           isActive: true,
           expiresAt: expiryDate,
           originalTransactionId,
@@ -171,7 +182,7 @@ export default async function billingRoutes(fastify: any) {
         userId: request.user.id,
         action: AuditActions.USER_PREMIUM_GRANTED,
         ip: request.ip,
-        metadata: { productId, originalTransactionId, expiresAt: expiryDate.toISOString() },
+        metadata: { productId: verifiedProductId, originalTransactionId, expiresAt: expiryDate.toISOString() },
       });
 
       reply.send({
@@ -182,8 +193,9 @@ export default async function billingRoutes(fastify: any) {
         },
       });
     } catch (e: any) {
+      // P0-79: generic error to client, structured detail server-side only.
       console.error('[billing] verify error', e);
-      reply.status(500).send({ error: 'Verification failed: ' + e.message });
+      reply.status(500).send({ error: 'Internal error' });
     }
   });
 
@@ -313,9 +325,10 @@ export default async function billingRoutes(fastify: any) {
 
       reply.status(200).send({ processed: true });
     } catch (e: any) {
+      // P0-80: return 500 for transient errors so Apple retries.
+      // Return 200 ONLY for successfully processed or intentionally ignored events.
       console.error('[billing] webhook error', e);
-      // Return 200 so Apple doesn't retry forever on transient errors.
-      reply.status(200).send({ processed: false, error: e.message });
+      reply.status(500).send({ error: 'Processing failed' });
     }
   });
 
