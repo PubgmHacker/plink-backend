@@ -72,8 +72,26 @@ export const config = {
 /**
  * §2: production startup must refuse to boot on weak/default secrets and on
  * CORS "*" with credentials. Called from app.ts during bootstrap.
+ *
+ * Brain Phase 1.1: missing/unknown NODE_ENV is fatal outside tests.
  */
 export function assertProductionInvariants(): void {
+  // Brain Phase 1.1: NODE_ENV must be explicitly set to 'production' or
+  // 'development' (or 'test'). Missing/unknown values are fatal outside tests.
+  const nodeEnv = process.env.NODE_ENV;
+  if (!nodeEnv) {
+    if (process.env.JEST_WORKER_ID || process.env.NODE_ENV === 'test') return;
+    throw new Error(
+      'FATAL: NODE_ENV is not set. Must be "production", "development", or "test".',
+    );
+  }
+  const known = new Set(['production', 'development', 'test', 'staging']);
+  if (!known.has(nodeEnv)) {
+    throw new Error(
+      `FATAL: NODE_ENV="${nodeEnv}" is not recognized. Use one of: production, development, test, staging.`,
+    );
+  }
+
   if (!config.isProduction) return;
 
   const weakSecrets = new Set([
@@ -98,5 +116,12 @@ export function assertProductionInvariants(): void {
   }
   if (config.JWT_AUDIENCES.length === 0) {
     throw new Error('FATAL: JWT_AUDIENCES must contain at least one audience in production.');
+  }
+  // Brain Phase 1.1: APP_STORE_COMPLIANT must be true in production.
+  if (!config.APP_STORE_COMPLIANT) {
+    throw new Error(
+      'FATAL: APP_STORE_COMPLIANT=false is forbidden in production. ' +
+        'App Store builds must not register extraction/proxy routes.',
+    );
   }
 }

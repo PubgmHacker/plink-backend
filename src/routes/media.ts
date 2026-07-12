@@ -3,11 +3,17 @@ import { extractStream, extractYouTubeStream, extractMetadata, UPSTREAM_USER_AGE
 import { youtubePlayerHTML } from '../services/youtubePlayer.js';
 import { proxyYouTubeEmbed } from '../services/youtubeEmbedProxy.js';
 import { cacheGet, cacheSet, cacheDel } from '../config/redis.js';
+import { config } from '../config/index.js';
 
 const EXTRACT_CACHE_TTL = 3600; // 1 час — прямой URL живёт долго
 
 export default async function mediaRoutes(fastify, _options) {
   const YOUTUBE_API_KEY = process.env.YOUTUBE_API_KEY;
+  // Brain Phase 1.2: App Store compliant builds must NOT register extraction/proxy routes.
+  // When APP_STORE_COMPLIANT=true, /api/media/extract, /extract-url, /youtube-stream, /youtube-embed
+  // all return 404. Only /search, /trending, /categories, /metadata (read-only YouTube Data API)
+  // and /youtube-player (official IFrame wrapper) are exposed.
+  const COMPLIANT = config.APP_STORE_COMPLIANT;
 
   // ═══════════════════════════════════════════════════════════════════
   // GET /api/media/search?q=запрос&limit=12 — YouTube поиск
@@ -179,7 +185,9 @@ export default async function mediaRoutes(fastify, _options) {
 
   // ═══════════════════════════════════════════════════════════════════
   // GET /api/media/extract?id=VIDEO_ID — YouTube stream extraction (yt-dlp)
+  // Brain Phase 1.2: registered ONLY in non-compliant builds.
   // ═══════════════════════════════════════════════════════════════════
+  if (!COMPLIANT) {
   fastify.get('/media/extract', {
     preHandler: [fastify.authenticate],
     config: { rateLimit: { max: 20, timeWindow: '1 minute' } }
@@ -223,10 +231,13 @@ export default async function mediaRoutes(fastify, _options) {
       reply.status(500).send({ error: 'Extract failed: ' + e.message });
     }
   });
+  } // end if (!COMPLIANT) — /media/extract
 
   // ═══════════════════════════════════════════════════════════════════
   // POST /api/media/extract-url — извлечение по любому URL (VK, RuTube, etc.)
+  // Brain Phase 1.2: registered ONLY in non-compliant builds.
   // ═══════════════════════════════════════════════════════════════════
+  if (!COMPLIANT) {
   fastify.post('/media/extract-url', {
     preHandler: [fastify.authenticate],
     config: { rateLimit: { max: 20, timeWindow: '1 minute' } }
@@ -247,6 +258,7 @@ export default async function mediaRoutes(fastify, _options) {
       reply.status(500).send({ error: 'Extract failed: ' + e.message });
     }
   });
+  } // end if (!COMPLIANT) — /media/extract-url
 
   // ═══════════════════════════════════════════════════════════════════
   // GET /api/media/metadata?url=... — только метаданные (без stream)
@@ -273,6 +285,7 @@ export default async function mediaRoutes(fastify, _options) {
 
   // ═════════════════════════════════════════════════════════════════════════
   // GET /api/media/youtube-stream?id=VIDEO_ID — Streaming Proxy (v9 July 2026)
+  // Brain Phase 1.2: registered ONLY in non-compliant builds.
   // ═════════════════════════════════════════════════════════════════════════
   //
   // PROBLEM: googlevideo URLs are IP-bound. yt-dlp extracts a URL containing
@@ -295,6 +308,7 @@ export default async function mediaRoutes(fastify, _options) {
 
   // v9.3: auth via query param (?token=JWT) — AVPlayer can't send headers reliably
   // v9.4: override security headers — CORP same-origin blocks AVPlayer cross-origin
+  if (!COMPLIANT) {
   fastify.get('/media/youtube-stream', {
     config: { rateLimit: { max: 30, timeWindow: '1 minute' } }
   }, async (request: any, reply: any) => {
@@ -405,9 +419,11 @@ export default async function mediaRoutes(fastify, _options) {
       return reply.status(500).send({ error: 'Stream proxy failed: ' + e.message });
     }
   });
+  } // end if (!COMPLIANT) — /media/youtube-stream
 
   // ═════════════════════════════════════════════════════════════════════════
   // GET /api/media/youtube-player?id=VIDEO_ID — Hosted IFrame Player (v11)
+  // Brain Phase 2: official YouTube controls. ALWAYS registered (compliant).
   // ═════════════════════════════════════════════════════════════════════════
   //
   // Serves a static HTML page that uses YouTube IFrame API.
@@ -450,6 +466,7 @@ export default async function mediaRoutes(fastify, _options) {
 
   // ═════════════════════════════════════════════════════════════════════════
   // GET /api/media/youtube-embed?id=VIDEO_ID — Full Embed Proxy (v12)
+  // Brain Phase 1.2: registered ONLY in non-compliant builds.
   // ═════════════════════════════════════════════════════════════════════════
   //
   // v12: backend fetches the ENTIRE youtube.com/embed/ page and serves it.
@@ -461,6 +478,7 @@ export default async function mediaRoutes(fastify, _options) {
   //   v11: our HTML + IFrame API → creates iframe to youtube.com → bot check
   //   v12: YouTube's OWN embed HTML → player runs directly → NO iframe request
 
+  if (!COMPLIANT) {
   fastify.get('/media/youtube-embed', {
     config: { rateLimit: { max: 30, timeWindow: '1 minute' } }
   }, async (request: any, reply: any) => {
@@ -498,4 +516,5 @@ export default async function mediaRoutes(fastify, _options) {
       return reply.status(500).send('Embed proxy failed: ' + e.message);
     }
   });
+  } // end if (!COMPLIANT) — /media/youtube-embed
 }
