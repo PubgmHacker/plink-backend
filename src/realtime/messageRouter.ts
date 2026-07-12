@@ -332,10 +332,12 @@ export function createMessageRouter(deps: RouterDeps) {
         ]);
         const allAllowed = new Set([...ALLOWED_FREE_EMOJIS, ...ALLOWED_PREMIUM_EMOJIS]);
 
-        // GPT-5 BE-P0-05: grapheme count validation (prevent long strings).
-        // Use Array.from to count grapheme clusters (not UTF-16 code units).
-        const graphemes = Array.from(m.emoji);
-        if (graphemes.length > 4) {
+        // GPT-5.6 SOL fix: Array.from() counts UTF-16 code units, not grapheme clusters.
+        // ❤️ = U+2764 U+FE0F → Array.from gives 2 elements, but it's 1 grapheme cluster.
+        // Use Intl.Segmenter (Node 16+) for correct grapheme cluster counting.
+        const segmenter = new Intl.Segmenter('en', { granularity: 'grapheme' });
+        const graphemeCount = [...segmenter.segment(m.emoji)].length;
+        if (graphemeCount > 4) {
           sendError(socket, 'INVALID_REACTION', 'Emoji too long (max 4 graphemes)');
           return;
         }

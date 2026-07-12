@@ -119,9 +119,21 @@ export default async function authRoutes(fastify) {
     }
   });
 
-  // POST /api/auth/admin-verify — проверка админ-кода для конкретного email
-  // 🔧 Pack v3: Специальный код ADM873IN7 для koslakandrej@gmail.com
+  // POST /api/auth/admin-verify — step-up 2FA for existing ADMIN/FOUNDER users.
+  //
+  // GPT-5.6 SOL fix: this endpoint was previously granting ADMIN role to anyone
+  // with the code, which is a privilege escalation. Now it ONLY issues a
+  // short-lived mfaVerified=true token to users who ALREADY have ADMIN or
+  // FOUNDER role in the DB. Role assignment must happen through a separate,
+  // audited admin flow (or DB migration for initial founder).
+  //
+  // Flow:
+  //   1. User signs in normally (gets USER role token).
+  //   2. Founder/Admin runs DB migration or separate admin-promote endpoint.
+  //   3. User calls /auth/admin-verify with 2FA code → gets mfaVerified=true token.
+  //   4. Token allows /api/admin/* access for 10 minutes.
   fastify.post('/auth/admin-verify', {
+    preHandler: [fastify.authenticate],
     config: { rateLimit: { max: 5, timeWindow: '10 minutes' } }
   }, async (request, reply) => {
     const { email, code } = request.body;
@@ -129,45 +141,66 @@ export default async function authRoutes(fastify) {
       return reply.status(400).send({ error: 'Email and code required' });
     }
 
-    // Проверка кода
-    const ADMIN_EMAIL = 'koslakandrej@gmail.com';
-    const ADMIN_CODE = 'ADM873IN7';
-
-    if (email.toLowerCase() !== ADMIN_EMAIL) {
-      return reply.status(403).send({ error: 'Not eligible for admin verification' });
+    // GPT-5.6 SOL: require authenticated session — admin-verify is step-up,
+    // not login. The caller must already be signed in.
+    if (!request.user || !request.user.id) {
+      return reply.status(401).send({ error: 'Authentication required for admin step-up' });
     }
+
+    // 2FA code verification (single-use would be ideal; for now static code).
+    const ADMIN_CODE = 'ADM873IN7';
     if (code !== ADMIN_CODE) {
       return reply.status(401).send({ error: 'Invalid admin code' });
     }
 
-    // Назначить роль ADMIN
-    const user = await prisma.user.findUnique({ where: { email: ADMIN_EMAIL } });
-    if (!user) return reply.status(404).send({ error: 'User not found' });
-
-    await prisma.user.update({
-      where: { id: user.id },
-      data: { role: 'ADMIN', isPremium: true }
+    // GPT-5.6 SOL: load user from DB and verify they ALREADY have ADMIN/FOUNDER role.
+    // This endpoint does NOT grant ADMIN — it only verifies 2FA for existing admins.
+    const user = await prisma.user.findUnique({
+      where: { id: request.user.id },
+      select: { id: true, username: true, email: true, role: true, isPremium: true },
     });
+    if (!user) {
+      return reply.status(404).send({ error: 'User not found' });
+    }
+
+    // GPT-5.6 SOL: reject if user is not already ADMIN or FOUNDER.
+    if (user.role !== 'ADMIN' && user.role !== 'FOUNDER') {
+      await logAudit({
+        userId: user.id,
+        action: 'admin.verify_denied',
+        ip: request.ip,
+        metadata: { reason: 'insufficient_role', userRole: user.role },
+      });
+      return reply.status(403).send({
+        error: 'Admin role required. Contact a founder to request admin access.',
+      });
+    }
+
+    // GPT-5.6 SOL: verify email matches the authenticated user (extra safety).
+    if (user.email.toLowerCase() !== email.toLowerCase()) {
+      return reply.status(403).send({ error: 'Email does not match authenticated user' });
+    }
 
     await logAudit({
       userId: user.id,
       action: 'admin.verified',
       ip: request.ip,
+      metadata: { role: user.role, method: '2fa_code' },
     });
 
-    // GPT-5 BE-P0-01: issue token with mfaVerified=true (admin code = 2FA step-up).
+    // Issue token with mfaVerified=true (admin step-up complete).
     // auth_time is set to now, so admin has 10 minutes before re-verification.
+    // Role comes from DB (user.role), NOT hardcoded 'ADMIN'.
     const tokens = await issueTokenPair(fastify, user.id, user.username, {
-      role: 'ADMIN',
+      role: user.role,
       mfaVerified: true,
     });
 
-    const { password: _, ...userWithoutPassword } = user;
     reply.send({
       token: tokens.accessToken,
       refreshToken: tokens.refreshToken,
       accessExpiresAt: tokens.accessExpiresAt,
-      user: { ...userWithoutPassword, role: 'ADMIN', isPremium: true },
+      user: { id: user.id, username: user.username, email: user.email, role: user.role, isPremium: user.isPremium },
     });
   });
 
