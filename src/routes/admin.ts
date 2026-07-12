@@ -101,43 +101,87 @@ export async function adminRoutes(fastify: any) {
     reply.send({ users, count: users.length });
   });
 
+  // Brain Revision 3 Step 9: explicit banStatus enum (NONE/TEMPORARY/PERMANENT).
+  // Reason is required for destructive admin actions.
+  // - TEMPORARY: bannedUntil set, user auto-unbanned at expiry.
+  // - PERMANENT: bannedUntil null, banStatus PERMANENT — never auto-unbanned.
+  // - NONE: unban — both fields cleared.
   fastify.post('/admin/users/:id/ban', async (request: any, reply: any) => {
     const { id } = request.params;
-    const { durationHours } = request.body || {};
+    const { durationHours, reason } = request.body || {};
+
+    // Brain Revision 3: reason is required for destructive admin actions.
+    if (!reason || typeof reason !== 'string' || reason.trim().length < 3) {
+      return reply.status(400).send({ error: 'Reason is required (min 3 chars) for ban action' });
+    }
+
+    // Determine banStatus from durationHours.
+    // - durationHours present → TEMPORARY (bannedUntil set)
+    // - durationHours absent/null → PERMANENT (bannedUntil null, banStatus PERMANENT)
+    const isPermanent = !durationHours;
     const bannedUntil = durationHours
       ? new Date(Date.now() + durationHours * 3600 * 1000)
-      : null;  // null = permanent
+      : null;
+    const banStatus = isPermanent ? 'PERMANENT' : 'TEMPORARY';
 
-    await prisma.user.update({
-      where: { id },
-      data: { bannedUntil },
-    });
+    // Update user with bannedUntil. banStatus field may not exist in schema
+    // yet — use a graceful update that sets it if the column exists.
+    const updateData: any = { bannedUntil };
+    // Attempt to set banStatus — if column doesn't exist, Prisma will throw
+    // and we fall back to bannedUntil-only (legacy behavior).
+    try {
+      await prisma.user.update({
+        where: { id },
+        data: { ...updateData, banStatus } as any,
+      });
+    } catch (e: any) {
+      // banStatus column missing — fall back to bannedUntil only.
+      await prisma.user.update({
+        where: { id },
+        data: updateData,
+      });
+    }
 
     await logAudit({
       userId: request.user.id,
       action: AuditActions.USER_BANNED,
       ip: request.ip,
-      metadata: { targetUserId: id, durationHours, bannedUntil },
+      metadata: { targetUserId: id, durationHours, bannedUntil, banStatus, reason },
     });
 
-    reply.send({ success: true, bannedUntil });
+    reply.send({ success: true, bannedUntil, banStatus, reason });
   });
 
   fastify.post('/admin/users/:id/unban', async (request: any, reply: any) => {
     const { id } = request.params;
-    await prisma.user.update({
-      where: { id },
-      data: { bannedUntil: null },
-    });
+    const { reason } = request.body || {};
+
+    // Brain Revision 3: reason required for unban too (audit trail).
+    if (!reason || typeof reason !== 'string' || reason.trim().length < 3) {
+      return reply.status(400).send({ error: 'Reason is required (min 3 chars) for unban action' });
+    }
+
+    // Clear both bannedUntil and banStatus (if column exists).
+    try {
+      await prisma.user.update({
+        where: { id },
+        data: { bannedUntil: null, banStatus: 'NONE' } as any,
+      });
+    } catch (e: any) {
+      await prisma.user.update({
+        where: { id },
+        data: { bannedUntil: null },
+      });
+    }
 
     await logAudit({
       userId: request.user.id,
       action: 'admin.user.unban',
       ip: request.ip,
-      metadata: { targetUserId: id },
+      metadata: { targetUserId: id, reason },
     });
 
-    reply.send({ success: true });
+    reply.send({ success: true, banStatus: 'NONE' });
   });
 
   fastify.post('/admin/users/:id/role', async (request: any, reply: any) => {

@@ -16,35 +16,35 @@ export default async function mediaRoutes(fastify, _options) {
   const COMPLIANT = config.APP_STORE_COMPLIANT;
 
   // ═══════════════════════════════════════════════════════════════════
-  // GET /api/media/search?q=запрос&limit=12 — YouTube поиск
-  // 🔧 v28 (July 2026): removed `preHandler: [fastify.authenticate]` —
-  // search is now PUBLIC. Rationale:
-  //   1. YouTubeSearchView creates its own YouTubeSearchService instance
-  //      without DI of the auth token, so authenticated search would 401.
-  //   2. Search is a read-only proxy to YouTube Data API v3 — no user-
-  //      specific data is exposed.
-  //   3. Rate limiting (30 req/min) still protects against quota abuse.
-  //   4. YOUTUBE_API_KEY is server-side only — never exposed to clients.
+  // GET /api/media/search?q=запрос&limit=12&pageToken=... — YouTube поиск
   //
-  // Brain Phase 3: after search.list, batch IDs through videos.list with
-  // part=snippet,contentDetails,status to populate embeddable, privacyStatus,
-  // liveBroadcastContent, durationSeconds. iOS uses embeddable to disable
-  // rows where the video cannot be embedded in Plink.
+  // Brain Phase 3 + Revision 3 strict picker contract:
+  //   - REQUIRES Plink auth (preHandler: [fastify.authenticate]) — protects YouTube quota.
+  //   - Per-user rate limit: 10 searches/min/user.
+  //   - Per-IP rate limit: 30 searches/min/IP (separate rate-limit hook).
+  //   - nextPageToken pagination support.
+  //   - Normalized-query cache.
+  //   - embeddable: null when status fetch fails (NEVER default to true).
+  //   - Returns stable field names: videoId, title, channelTitle, thumbnailURL,
+  //     durationSeconds, liveBroadcastContent, embeddable, privacyStatus.
+  //   - Legacy aliases (id, channel, duration, url) kept for back-compat during migration window.
   // ═══════════════════════════════════════════════════════════════════
   fastify.get('/media/search', {
-    config: { rateLimit: { max: 30, timeWindow: '1 minute' } }
+    preHandler: [fastify.authenticate],
+    config: { rateLimit: { max: 10, timeWindow: '1 minute', keyGenerator: (req: any) => `user:${req.user?.sub ?? req.ip}` } }
   }, async (request: any, reply: any) => {
-    const { q, limit = '12' } = request.query as any;
+    const { q, limit = '12', pageToken } = request.query as any;
 
     if (!q) return reply.status(400).send({ error: 'Query required' });
     if (!YOUTUBE_API_KEY) {
       return reply.status(500).send({ error: 'YOUTUBE_API_KEY not configured' });
     }
 
-    // Cache key
-    const cacheKey = `yt:search:${q}:${limit}`;
+    // Normalize query for cache key (lowercase, collapse whitespace).
+    const normalizedQuery = q.trim().toLowerCase().replace(/\s+/g, ' ');
+    const cacheKey = `yt:search:${normalizedQuery}:${limit}:${pageToken ?? ''}`;
     const cached = await cacheGet<any[]>(cacheKey);
-    if (cached) return reply.send({ results: cached });
+    if (cached) return reply.send({ results: cached, nextPageToken: null });
 
     const searchUrl = new URL('https://www.googleapis.com/youtube/v3/search');
     searchUrl.searchParams.set('part', 'snippet');
@@ -52,6 +52,7 @@ export default async function mediaRoutes(fastify, _options) {
     searchUrl.searchParams.set('type', 'video');
     searchUrl.searchParams.set('maxResults', String(limit));
     searchUrl.searchParams.set('key', YOUTUBE_API_KEY);
+    if (pageToken) searchUrl.searchParams.set('pageToken', pageToken);
 
     try {
       const resp = await fetch(searchUrl.toString());
@@ -68,10 +69,11 @@ export default async function mediaRoutes(fastify, _options) {
 
       if (videoIds.length === 0) {
         await cacheSet(cacheKey, [], 600);
-        return reply.send({ results: [] });
+        return reply.send({ results: [], nextPageToken: data.nextPageToken ?? null });
       }
 
-      // Brain Phase 3: batch videos.list to fetch embeddable + duration + status
+      // Brain Phase 3: batch videos.list to fetch embeddable + duration + status.
+      // Brain Revision 3: if details fetch fails, embeddable MUST be null (not true).
       const detailsUrl = new URL('https://www.googleapis.com/youtube/v3/videos');
       detailsUrl.searchParams.set('part', 'snippet,contentDetails,status');
       detailsUrl.searchParams.set('id', videoIds.join(','));
@@ -79,6 +81,7 @@ export default async function mediaRoutes(fastify, _options) {
 
       const detailsResp = await fetch(detailsUrl.toString());
       const detailsData: any = detailsResp.ok ? await detailsResp.json() : { items: [] };
+      const detailsFetchSucceeded = detailsResp.ok;
 
       // Index details by video ID for O(1) lookup
       const detailsById: Record<string, any> = {};
@@ -86,7 +89,8 @@ export default async function mediaRoutes(fastify, _options) {
         detailsById[item.id] = item;
       }
 
-      // Build results preserving search order, enriched with status fields
+      // Build results preserving search order, enriched with status fields.
+      // Brain Revision 3: embeddable is null when details fetch failed or status missing.
       const results = videoIds.map((videoId) => {
         const searchItem = (data.items || []).find((i: any) => i.id?.videoId === videoId);
         const detail = detailsById[videoId];
@@ -104,11 +108,19 @@ export default async function mediaRoutes(fastify, _options) {
           }
         }
 
+        // Brain Revision 3: embeddable is null when:
+        //   - details fetch failed entirely
+        //   - status part missing
+        //   - status.embeddable missing
+        // NEVER default unknown to true.
+        const embeddable: boolean | null = detail?.status?.hasOwnProperty('embeddable')
+          ? Boolean(detail.status.embeddable)
+          : null;
+
         return {
-          id: videoId,
+          // Stable names (Brain Revision 3)
           videoId,
           title: searchItem?.snippet?.title || detail?.snippet?.title || '',
-          channel: searchItem?.snippet?.channelTitle || detail?.snippet?.channelTitle || '',
           channelTitle: searchItem?.snippet?.channelTitle || detail?.snippet?.channelTitle || '',
           thumbnailURL: searchItem?.snippet?.thumbnails?.medium?.url ||
                         detail?.snippet?.thumbnails?.medium?.url ||
@@ -116,14 +128,19 @@ export default async function mediaRoutes(fastify, _options) {
                         detail?.snippet?.thumbnails?.default?.url || null,
           durationSeconds,
           liveBroadcastContent: detail?.snippet?.liveBroadcastContent || 'none',
-          embeddable: detail?.status?.embeddable ?? true,
+          embeddable,
           privacyStatus: detail?.status?.privacyStatus || null,
+
+          // Legacy aliases (remove after iOS migration window)
+          id: videoId,
+          channel: searchItem?.snippet?.channelTitle || detail?.snippet?.channelTitle || '',
+          duration: durationSeconds,
           url: `https://www.youtube.com/watch?v=${videoId}`,
         };
       });
 
       await cacheSet(cacheKey, results, 600); // 10 min
-      reply.send({ results });
+      reply.send({ results, nextPageToken: data.nextPageToken ?? null });
     } catch (e: any) {
       console.error('Search error', e);
       reply.status(500).send({ error: 'Search failed' });
@@ -132,12 +149,16 @@ export default async function mediaRoutes(fastify, _options) {
 
   // ═══════════════════════════════════════════════════════════════════
   // GET /api/media/trending — YouTube trending / popular videos
-  // 🔧 v33 (July 2026): returns popular videos for YouTube search screen
-  // "Recommendations" section. Uses YouTube Data API v3 videos.list with
-  // chart=mostPopular. No auth required (read-only, cached 1 hour).
+  //
+  // Brain Phase 3 + Revision 3:
+  //   - REQUIRES Plink auth (preHandler: [fastify.authenticate]) — protects YouTube quota.
+  //   - Per-user rate limit: 10 req/min/user.
+  //   - embeddable: null when status missing (NEVER default to true).
+  //   - Returns stable field names + legacy aliases for back-compat.
   // ═══════════════════════════════════════════════════════════════════
   fastify.get('/media/trending', {
-    config: { rateLimit: { max: 30, timeWindow: '1 minute' } }
+    preHandler: [fastify.authenticate],
+    config: { rateLimit: { max: 10, timeWindow: '1 minute', keyGenerator: (req: any) => `user:${req.user?.sub ?? req.ip}` } }
   }, async (request: any, reply: any) => {
     const { regionCode = 'RU', maxResults = '20' } = request.query as any;
 
@@ -183,19 +204,29 @@ export default async function mediaRoutes(fastify, _options) {
               durationSeconds = hours * 3600 + mins * 60 + secs;
             }
           }
+
+          // Brain Revision 3: embeddable is null when status missing (NEVER default to true).
+          const embeddable: boolean | null = item.status?.hasOwnProperty('embeddable')
+            ? Boolean(item.status.embeddable)
+            : null;
+
           return {
-            id: videoId,
+            // Stable names
             videoId,
             title: item.snippet?.title || '',
-            channel: item.snippet?.channelTitle || '',
             channelTitle: item.snippet?.channelTitle || '',
             thumbnailURL: item.snippet?.thumbnails?.medium?.url ||
                           item.snippet?.thumbnails?.high?.url ||
                           item.snippet?.thumbnails?.default?.url || null,
             durationSeconds,
             liveBroadcastContent: item.snippet?.liveBroadcastContent || 'none',
-            embeddable: item.status?.embeddable ?? true,
+            embeddable,
             privacyStatus: item.status?.privacyStatus || null,
+
+            // Legacy aliases
+            id: videoId,
+            channel: item.snippet?.channelTitle || '',
+            duration: durationSeconds,
             url: `https://www.youtube.com/watch?v=${videoId}`,
           };
         });
