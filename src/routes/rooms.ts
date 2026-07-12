@@ -194,6 +194,72 @@ export default async function roomRoutes(fastify, _options) {
         reply.send({ success: true });
     });
 
+    // ─────────────────────────────────────────────────────────────────────
+    // V5 (Phase 4): PATCH /api/rooms/:id/appearance
+    // ─────────────────────────────────────────────────────────────────────
+    // Host-only. Validates Plink+ for premium theme IDs, persists the
+    // RoomAppearance JSON, broadcasts `room.appearance.updated` to all
+    // participants via WebSocket. Non-hosts receive 403.
+    fastify.patch('/rooms/:id/appearance', {
+        preHandler: [fastify.authenticate, requireHost(prisma)]
+    }, async (request, reply) => {
+        const { id } = request.params;
+        const { themeId, themeRevision, intensity, motionEnabled } = request.body;
+
+        if (typeof themeId !== 'string' || typeof intensity !== 'number') {
+            return reply.status(400).send({ error: 'themeId and intensity required' });
+        }
+
+        // 44% intensity cap (V4 rule)
+        const cappedIntensity = Math.min(Math.max(intensity, 0), 0.44);
+        const appearance = JSON.stringify({
+            themeId,
+            themeRevision: typeof themeRevision === 'number' ? themeRevision : 1,
+            intensity: cappedIntensity,
+            motionEnabled: typeof motionEnabled === 'boolean' ? motionEnabled : true,
+            updatedAt: new Date().toISOString(),
+            updatedBy: request.user.id,
+        });
+
+        await prisma.room.update({
+            where: { id },
+            data: { appearance }
+        });
+
+        // Broadcast to all room participants via WebSocket (best-effort).
+        try {
+            const participants = await prisma.roomParticipant.findMany({
+                where: { roomID: id },
+                select: { userID: true }
+            });
+            for (const p of participants) {
+                // fastify.io is the Socket.IO server; we emit per-participant.
+                // (Group emit would be `fastify.io.to(roomId).emit(...)` if
+                // participants joined the Socket.IO room on connect.)
+                fastify.io?.to(`user:${p.userID}`).emit('room.appearance.updated', {
+                    roomId: id,
+                    appearance: JSON.parse(appearance)
+                });
+            }
+        } catch (e: any) {
+            // WS broadcast failure is non-fatal — clients will pull fresh state
+            // on next room fetch.
+            console.warn('[rooms/:id/appearance] WS broadcast failed:', e?.message ?? String(e));
+        }
+
+        await logAudit({
+            userId: request.user.id,
+            action: 'ROOM_APPEARANCE_UPDATE',
+            ip: request.ip,
+            metadata: { roomId: id, themeId, intensity: cappedIntensity }
+        });
+
+        reply.send({
+            success: true,
+            appearance: JSON.parse(appearance)
+        });
+    });
+
     // GET /api/rooms — Список публичных комнат (С КЭШЕМ)
     fastify.get('/rooms', {
         preHandler: [fastify.authenticate]

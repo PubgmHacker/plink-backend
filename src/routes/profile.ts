@@ -2,6 +2,7 @@ import { prisma } from '../config/db.js';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { logAudit, AuditActions } from '../utils/audit.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -112,6 +113,114 @@ export default async function profileRoutes(fastify) {
       reply.status(500).send({ error: 'Failed to delete account: ' + (e?.message || String(e)) });
     }
   });
+
+  // ─────────────────────────────────────────────────────────────────────
+  // V5 endpoints (Phase 4 of PLINK_MASTER_PLAN_10_OF_10.md)
+  // ─────────────────────────────────────────────────────────────────────
+
+  // GET /api/profile/appearance
+  // Phase 4: returns the user's saved appearance selection (cross-device restore).
+  // Values are stored as JSON on the User row in `appearancePrefs`.
+  fastify.get('/profile/appearance', { preHandler: [fastify.authenticate] }, async (request, reply) => {
+    const user = await prisma.user.findUnique({
+      where: { id: request.user.id },
+      select: { appearancePrefs: true }
+    });
+
+    // Defaults if user has never selected anything.
+    const defaults = {
+      appThemeID: 'electric-static',
+      bubbleStyleID: 'bubble-quiet',
+      emojiPackID: 'system-unicode'
+    };
+
+    if (!user?.appearancePrefs) {
+      return reply.send(defaults);
+    }
+    try {
+      const parsed = JSON.parse(user.appearancePrefs);
+      reply.send({
+        appThemeID: parsed.appThemeID ?? defaults.appThemeID,
+        bubbleStyleID: parsed.bubbleStyleID ?? defaults.bubbleStyleID,
+        emojiPackID: parsed.emojiPackID ?? defaults.emojiPackID
+      });
+    } catch {
+      reply.send(defaults);
+    }
+  });
+
+  // PUT /api/profile/appearance
+  // Phase 4: persists the user's appearance selection for cross-device restore.
+  fastify.put('/profile/appearance', { preHandler: [fastify.authenticate] }, async (request, reply) => {
+    const { appThemeID, bubbleStyleID, emojiPackID } = request.body;
+
+    if (typeof appThemeID !== 'string' ||
+        typeof bubbleStyleID !== 'string' ||
+        typeof emojiPackID !== 'string') {
+      return reply.status(400).send({ error: 'appThemeID, bubbleStyleID, emojiPackID required' });
+    }
+
+    const prefs = JSON.stringify({ appThemeID, bubbleStyleID, emojiPackID });
+
+    await prisma.user.update({
+      where: { id: request.user.id },
+      data: { appearancePrefs: prefs }
+    });
+
+    await logAudit({
+      userId: request.user.id,
+      action: AuditActions.PROFILE_APPEARANCE_UPDATE,
+      ip: request.ip,
+      metadata: { appThemeID, bubbleStyleID, emojiPackID }
+    });
+
+    reply.status(204).send();
+  });
+
+  // POST /api/profile/delete
+  // Phase 2.7: scheduled account deletion with grace period (14 days).
+  // Marks the user as `scheduledForDeletionAt = now + 14d`; a cron job
+  // (see services/gdpr.ts) performs the actual cascade delete after the
+  // grace period expires. User can cancel by signing in before then.
+  fastify.post('/profile/delete', { preHandler: [fastify.authenticate] }, async (request, reply) => {
+    const { confirmAccountId, reason } = request.body;
+
+    if (confirmAccountId !== request.user.id) {
+      return reply.status(400).send({
+        error: 'Account ID confirmation does not match'
+      });
+    }
+
+    const scheduledForDeletionAt = new Date();
+    scheduledForDeletionAt.setDate(scheduledForDeletionAt.getDate() + 14);
+
+    await prisma.user.update({
+      where: { id: request.user.id },
+      data: { scheduledForDeletionAt }
+    });
+
+    // Revoke all refresh tokens immediately — keeps access token valid until
+    // expiry (max 24h) but blocks long-lived session extension.
+    // (Import happens lazily to avoid circular import with tokens.js.)
+    const { revokeAllUserTokens } = await import('../utils/tokens.js');
+    await revokeAllUserTokens(request.user.id);
+
+    await logAudit({
+      userId: request.user.id,
+      action: AuditActions.ACCOUNT_DELETION_REQUESTED,
+      ip: request.ip,
+      metadata: { reason: reason ?? 'user_initiated', scheduledForDeletionAt }
+    });
+
+    reply.send({
+      scheduledForDeletionAt,
+      message: 'Account scheduled for deletion in 14 days. Sign in before then to cancel.'
+    });
+  });
+
+  // ─────────────────────────────────────────────────────────────────────
+  // /users/me endpoints (existing)
+  // ─────────────────────────────────────────────────────────────────────
 
   fastify.get('/users/:id', { preHandler: [fastify.authenticate] }, async (request, reply) => {
     const { id } = request.params;

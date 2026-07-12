@@ -89,6 +89,21 @@ export default async function authRoutes(fastify) {
         return reply.status(403).send({ error: 'Account banned' });
       }
 
+      // V5 (Phase 2.7): signing in cancels any pending scheduled deletion.
+      // User changed their mind — restore the account to good standing.
+      if (user.scheduledForDeletionAt) {
+        await prisma.user.update({
+          where: { id: user.id },
+          data: { scheduledForDeletionAt: null }
+        });
+        await logAudit({
+          userId: user.id,
+          action: AuditActions.ACCOUNT_DELETION_CANCELLED,
+          ip: request.ip,
+          metadata: { previouslyScheduledFor: user.scheduledForDeletionAt }
+        });
+      }
+
       await prisma.user.update({ where: { id: user.id }, data: { isOnline: true } });
 
       const tokens = await issueTokenPair(fastify, user.id, user.username, { role: user.role });
@@ -286,5 +301,87 @@ export default async function authRoutes(fastify) {
       data: { fcmToken }
     });
     reply.send({ success: true });
+  });
+
+  // ─────────────────────────────────────────────────────────────────────
+  // V5 endpoints (Phase 4 of PLINK_MASTER_PLAN_10_OF_10.md)
+  // ─────────────────────────────────────────────────────────────────────
+
+  // GET /api/auth/check-username?username=...
+  // Phase 2.6: returns true if nickname is available for registration.
+  fastify.get('/auth/check-username', async (request, reply) => {
+    const username = String(request.query?.username ?? '').trim();
+    if (username.length < 3) {
+      return reply.send({ available: false });
+    }
+    const existing = await prisma.user.findFirst({
+      where: { username: { equals: username, mode: 'insensitive' } },
+      select: { id: true }
+    });
+    reply.send({ available: !existing });
+  });
+
+  // POST /api/auth/heartbeat
+  // Phase 4: returns active sessions list + current device flag.
+  // Lightweight — just confirms the token is valid and returns session metadata.
+  fastify.post('/auth/heartbeat', {
+    preHandler: [fastify.authenticate]
+  }, async (request, reply) => {
+    const userId = request.user.id;
+    const userAgent = String(request.headers['user-agent'] ?? 'unknown');
+
+    // Update lastSeen on the user row (cheap upsert).
+    await prisma.user.update({
+      where: { id: userId },
+      data: { isOnline: true }
+    }).catch(() => { /* ignore — heartbeat is best-effort */ });
+
+    // Build a single pseudo-session row from current request.
+    // (Real per-device session tracking requires a Session table; until that
+    // lands, we return the current device only and mark it as primary.)
+    const sessions = [{
+      id: `${userId}-${userAgent}`,
+      device: userAgent,
+      location: null,
+      lastSeen: new Date(),
+      isCurrent: true
+    }];
+
+    reply.send({
+      sessions,
+      currentDeviceIsPrimary: true,
+      primaryDevice: userAgent,
+      primarySince: new Date(),
+      lastAuthAt: new Date()
+    });
+  });
+
+  // POST /api/auth/signout-others
+  // Phase 4: revokes all refresh tokens for the user (which kicks other
+  // devices on their next /auth/refresh call), then re-issues a fresh pair
+  // for the current device so the caller stays signed in.
+  fastify.post('/auth/signout-others', {
+    preHandler: [fastify.authenticate]
+  }, async (request, reply) => {
+    const userId = request.user.id;
+    const username = request.user.username;
+
+    // Revoke everything, then issue a new pair for this device.
+    await revokeAllUserTokens(userId);
+    const tokens = await issueTokenPair(fastify, userId, username);
+
+    await logAudit({
+      userId,
+      action: AuditActions.SIGNOUT_OTHERS,
+      ip: request.ip,
+      metadata: { reason: 'signout-others' }
+    });
+
+    reply.send({
+      success: true,
+      token: tokens.accessToken,
+      refreshToken: tokens.refreshToken,
+      accessExpiresAt: tokens.accessExpiresAt
+    });
   });
 }

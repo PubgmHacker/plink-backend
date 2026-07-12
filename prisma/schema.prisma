@@ -41,6 +41,15 @@ model User {
 
   referralCode String?
 
+  // ─── V5 (Phase 4 of PLINK_MASTER_PLAN_10_OF_10.md) ───
+  /// JSON-stringified { appThemeID, bubbleStyleID, emojiPackID } for
+  /// cross-device appearance restore. Null = use client defaults.
+  appearancePrefs         String?
+  /// GDPR: when set, account is scheduled for cascade deletion after the
+  /// grace period (14 days). User can cancel by signing in before then.
+  /// A cron job (services/gdpr.ts) performs the actual delete.
+  scheduledForDeletionAt  DateTime?
+
   hostedRooms      Room[]            @relation("HostRooms")
   participations   RoomParticipant[]
   sentMessages     ChatMessage[]
@@ -79,6 +88,12 @@ model Room {
   createdAt      DateTime @default(now())
   privacy        String   @default("public")
   password       String?
+
+  // ─── V5 (Phase 4) ───
+  /// JSON-stringified RoomAppearance { themeId, themeRevision, intensity,
+  /// motionEnabled }. Host-authoritative; broadcast to all participants on
+  /// change via WebSocket `room.appearance.updated` event.
+  appearance     String?
 
   participants   RoomParticipant[]
   messages       ChatMessage[]

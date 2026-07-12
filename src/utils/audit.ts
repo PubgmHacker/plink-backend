@@ -38,4 +38,10 @@ export const AuditActions = {
   MESSAGE_SENT: 'message.sent',
   USER_BANNED: 'user.banned',
   USER_PREMIUM_GRANTED: 'user.premium.granted',
+  // V5 (Phase 4)
+  ROOM_APPEARANCE_UPDATE: 'room.appearance.update',
+  PROFILE_APPEARANCE_UPDATE: 'profile.appearance.update',
+  ACCOUNT_DELETION_REQUESTED: 'account.deletion.requested',
+  ACCOUNT_DELETION_CANCELLED: 'account.deletion.cancelled',
+  SIGNOUT_OTHERS: 'auth.signout.others',
 } as const;
