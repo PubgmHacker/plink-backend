@@ -20,10 +20,29 @@ function parseCorsOrigin(raw: string | undefined): string | string[] {
     // reject it (see assertProductionInvariants below).
     return '*';
   }
-  return raw
+  // Support "app://plink" and "null" as valid origins (iOS native app sends
+  // no Origin header, but if it does, it's "null" or "app://bundle.id").
+  // The keyword `native` expands to a small allowlist of native app origins.
+  const expanded = raw
     .split(',')
     .map((s) => s.trim())
-    .filter((s) => s.length > 0);
+    .filter((s) => s.length > 0)
+    .flatMap((s) => {
+      if (s === 'native') {
+        // Common iOS native origins + localhost for simulator testing.
+        return [
+          'null',                        // iOS WKWebView may send Origin: null
+          'app://plink',                 // Plink custom scheme (if used)
+          'capacitor://localhost',       // Capacitor app
+          'ionic://localhost',           // Ionic app
+          'http://localhost',            // iOS Simulator (HTTP)
+          'http://localhost:8080',       // iOS Simulator (alt port)
+          'https://localhost',           // iOS Simulator (HTTPS)
+        ];
+      }
+      return [s];
+    });
+  return expanded;
 }
 
 const jwtSecret = process.env.JWT_SECRET || 'dev-secret-change-me';
