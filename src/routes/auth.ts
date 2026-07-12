@@ -33,7 +33,7 @@ export default async function authRoutes(fastify) {
         data: { email, username, password: hashedPassword, isOnline: true }
       });
 
-      const tokens = await issueTokenPair(fastify, user.id, user.username);
+      const tokens = await issueTokenPair(fastify, user.id, user.username, { role: user.role });
 
       await logAudit({
         userId: user.id,
@@ -91,7 +91,7 @@ export default async function authRoutes(fastify) {
 
       await prisma.user.update({ where: { id: user.id }, data: { isOnline: true } });
 
-      const tokens = await issueTokenPair(fastify, user.id, user.username);
+      const tokens = await issueTokenPair(fastify, user.id, user.username, { role: user.role });
 
       await logAudit({
         userId: user.id,
@@ -155,8 +155,12 @@ export default async function authRoutes(fastify) {
       ip: request.ip,
     });
 
-    // Выдать новые токены с admin ролью
-    const tokens = await issueTokenPair(fastify, user.id, user.username);
+    // GPT-5 BE-P0-01: issue token with mfaVerified=true (admin code = 2FA step-up).
+    // auth_time is set to now, so admin has 10 minutes before re-verification.
+    const tokens = await issueTokenPair(fastify, user.id, user.username, {
+      role: 'ADMIN',
+      mfaVerified: true,
+    });
 
     const { password: _, ...userWithoutPassword } = user;
     reply.send({
@@ -195,7 +199,7 @@ export default async function authRoutes(fastify) {
         return reply.status(403).send({ error: 'Account banned' });
       }
 
-      const tokens = await issueTokenPair(fastify, user.id, user.username);
+      const tokens = await issueTokenPair(fastify, user.id, user.username, { role: user.role });
 
       await logAudit({
         userId: user.id,

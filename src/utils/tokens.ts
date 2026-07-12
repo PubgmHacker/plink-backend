@@ -11,23 +11,44 @@ export interface TokenPair {
   refreshExpiresAt: number;
 }
 
-export async function issueTokenPair(fastify: any, userId: string, username?: string): Promise<TokenPair> {
-  // Access token (по умолчанию 7 дней — не выкидывает из фильма)
-  // 🔧 Pack v3: добавлен username в JWT — rooms.ts использует request.user.username
-  const payload: any = { id: userId };
+/**
+ * GPT-5 BE-P0-01: issue access token with role + mfa + auth_time claims.
+ * - `role`: USER | MODERATOR | ADMIN | FOUNDER (from DB)
+ * - `mfa`: true if user completed 2FA verification in this session
+ * - `auth_time`: Unix timestamp (seconds) of when the user authenticated
+ *
+ * Admin routes check `mfa === true` and `now - auth_time <= 600` (10 min)
+ * before allowing any admin action.
+ */
+export async function issueTokenPair(
+  fastify: any,
+  userId: string,
+  username?: string,
+  options?: { mfaVerified?: boolean; role?: string }
+): Promise<TokenPair> {
+  const now = Math.floor(Date.now() / 1000);
+  const payload: any = {
+    id: userId,
+    sub: userId,       // GPT-5: standard JWT subject claim
+    iat: now,          // issued at (seconds)
+    auth_time: now,    // GPT-5 BE-P0-01: authentication timestamp
+    mfa: options?.mfaVerified ?? false,  // GPT-5 BE-P0-01: 2FA completed
+  };
   if (username) payload.username = username;
+  if (options?.role) payload.role = options.role;
+
   const accessToken = fastify.jwt.sign(
     payload,
     { expiresIn: config.ACCESS_TOKEN_TTL as any }
   );
-  
+
   // Refresh token (по умолчанию 90 дней)
   const refreshPayload = crypto.randomBytes(48).toString('hex');
   const refreshHash = await bcrypt.hash(refreshPayload, 10);
   const refreshExpiresAt = new Date(
     Date.now() + config.REFRESH_TOKEN_TTL_DAYS * 24 * 3600 * 1000
   );
-  
+
   await prisma.refreshToken.create({
     data: {
       userId,
@@ -35,12 +56,12 @@ export async function issueTokenPair(fastify: any, userId: string, username?: st
       expiresAt: refreshExpiresAt,
     },
   });
-  
+
   const refreshToken = `${userId}.${refreshPayload}`;
-  
+
   // Вычисляем accessExpiresAt из TTL строки ('7d' → 7 * 24 * 3600 * 1000)
   const accessExpiresAt = parseTtlToMs(config.ACCESS_TOKEN_TTL);
-  
+
   return {
     accessToken,
     refreshToken,

@@ -28,6 +28,11 @@ import { prisma } from '../config/db.js';
 import { logAudit, AuditActions } from '../utils/audit.js';
 
 // Admin role check middleware — must be ADMIN or FOUNDER.
+// GPT-5 BE-P0-01: also require 2FA verified + recent auth (<=10 minutes)
+// for ALL admin requests. Mutations must wrap audit log in the same
+// Prisma transaction as the mutation itself.
+const RECENT_AUTH_SECONDS = 10 * 60; // 10 minutes
+
 function requireAdmin(fastify: any) {
   fastify.addHook('preHandler', async (request: any, reply: any) => {
     if (!request.user) {
@@ -42,6 +47,27 @@ function requireAdmin(fastify: any) {
         metadata: { path: request.url, role },
       });
       return reply.status(403).send({ error: 'Admin access required' });
+    }
+
+    // GPT-5 BE-P0-01: 2FA must be enabled and verified.
+    // JWT claim `mfa: true` means the user completed 2FA in this session.
+    if (request.user.mfa !== true) {
+      return reply.status(401).send({ error: 'step_up_required', reason: 'mfa' });
+    }
+
+    // GPT-5 BE-P0-01: recent auth required (auth_time within 10 minutes).
+    // JWT claim `auth_time` is set when the user authenticates (login or 2FA verify).
+    if (typeof request.user.auth_time !== 'number') {
+      return reply.status(401).send({ error: 'step_up_required', reason: 'missing_auth_time' });
+    }
+    const now = Math.floor(Date.now() / 1000);
+    if (now - request.user.auth_time > RECENT_AUTH_SECONDS) {
+      return reply.status(401).send({
+        error: 'step_up_required',
+        reason: 'stale_auth',
+        auth_age_seconds: now - request.user.auth_time,
+        max_age_seconds: RECENT_AUTH_SECONDS,
+      });
     }
   });
 }
@@ -69,43 +95,106 @@ export async function adminRoutes(fastify: any) {
     reply.send({ users, count: users.length });
   });
 
+  // GPT-5 BE-P0-01: ban endpoint with transaction-wrapped audit + reason required.
+  // - TEMPORARY: durationHours present → bannedUntil set
+  // - PERMANENT: durationHours absent → banStatus PERMANENT
+  // - Founder protection: cannot ban the last founder.
   fastify.post('/admin/users/:id/ban', async (request: any, reply: any) => {
     const { id } = request.params;
-    const { durationHours } = request.body || {};
+    const { durationHours, reason } = request.body || {};
+
+    // GPT-5 BE-P0-01: reason required for destructive actions.
+    if (!reason || typeof reason !== 'string' || reason.trim().length < 3) {
+      return reply.status(400).send({ error: 'Reason is required (min 3 chars) for ban action' });
+    }
+
+    // Founder protection.
+    const targetUser = await prisma.user.findUnique({ where: { id } });
+    if (!targetUser) return reply.status(404).send({ error: 'User not found' });
+    if (targetUser.role === 'FOUNDER') {
+      const founderCount = await prisma.user.count({ where: { role: 'FOUNDER' } });
+      if (founderCount <= 1) {
+        return reply.status(403).send({ error: 'Cannot ban the last founder' });
+      }
+    }
+
+    const isPermanent = !durationHours;
     const bannedUntil = durationHours
       ? new Date(Date.now() + durationHours * 3600 * 1000)
-      : null;  // null = permanent
+      : null;
+    const banStatus = isPermanent ? 'PERMANENT' : 'TEMPORARY';
 
-    await prisma.user.update({
-      where: { id },
-      data: { bannedUntil },
-    });
+    // GPT-5 BE-P0-01: wrap mutation + audit in one transaction.
+    try {
+      await prisma.$transaction(async (tx) => {
+        const updateData: any = { bannedUntil };
+        try {
+          await tx.user.update({
+            where: { id },
+            data: { ...updateData, banStatus } as any,
+          });
+        } catch {
+          await tx.user.update({ where: { id }, data: updateData });
+        }
 
-    await logAudit({
-      userId: request.user.id,
-      action: AuditActions.USER_BANNED,
-      ip: request.ip,
-      metadata: { targetUserId: id, durationHours, bannedUntil },
-    });
+        await tx.auditLog.create({
+          data: {
+            actorId: request.user.id,
+            action: AuditActions.USER_BANNED,
+            targetType: 'USER',
+            targetId: id,
+            ip: request.ip,
+            requestId: request.id,
+            metadata: { durationHours, bannedUntil, banStatus, reason, targetRole: targetUser.role },
+          } as any,
+        });
+      });
+    } catch (txErr: any) {
+      request.log.error({ err: txErr }, 'ban transaction failed');
+      return reply.status(500).send({ error: 'Internal Server Error' });
+    }
 
-    reply.send({ success: true, bannedUntil });
+    reply.send({ success: true, bannedUntil, banStatus, reason });
   });
 
+  // GPT-5 BE-P0-01: unban with transaction-wrapped audit + reason required.
   fastify.post('/admin/users/:id/unban', async (request: any, reply: any) => {
     const { id } = request.params;
-    await prisma.user.update({
-      where: { id },
-      data: { bannedUntil: null },
-    });
+    const { reason } = request.body || {};
 
-    await logAudit({
-      userId: request.user.id,
-      action: 'admin.user.unban',
-      ip: request.ip,
-      metadata: { targetUserId: id },
-    });
+    if (!reason || typeof reason !== 'string' || reason.trim().length < 3) {
+      return reply.status(400).send({ error: 'Reason is required (min 3 chars) for unban action' });
+    }
 
-    reply.send({ success: true });
+    try {
+      await prisma.$transaction(async (tx) => {
+        try {
+          await tx.user.update({
+            where: { id },
+            data: { bannedUntil: null, banStatus: 'NONE' } as any,
+          });
+        } catch {
+          await tx.user.update({ where: { id }, data: { bannedUntil: null } });
+        }
+
+        await tx.auditLog.create({
+          data: {
+            actorId: request.user.id,
+            action: 'admin.user.unban',
+            targetType: 'USER',
+            targetId: id,
+            ip: request.ip,
+            requestId: request.id,
+            metadata: { reason },
+          } as any,
+        });
+      });
+    } catch (txErr: any) {
+      request.log.error({ err: txErr }, 'unban transaction failed');
+      return reply.status(500).send({ error: 'Internal Server Error' });
+    }
+
+    reply.send({ success: true, banStatus: 'NONE' });
   });
 
   fastify.post('/admin/users/:id/role', async (request: any, reply: any) => {
