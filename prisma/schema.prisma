@@ -86,6 +86,16 @@ model Room {
   watchHistory   WatchHistory[]
   reports        Report[]          @relation("ReportedRoom")
   adBreaks       AdBreak[]
+
+  // GPT-5 BE-P0-07: indexes for hot paths
+  // - isActive+createdAt: Home "Сейчас смотрят" rail
+  // - privacy+isActive: public discovery filtering
+  // - hostID: "my rooms" query
+  // - mediaItem: discovery/popular aggregation
+  @@index([isActive, createdAt])
+  @@index([privacy, isActive])
+  @@index([hostID])
+  @@index([mediaItem])
 }
 
 model RoomParticipant {

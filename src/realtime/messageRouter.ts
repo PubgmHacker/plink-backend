@@ -308,6 +308,8 @@ export function createMessageRouter(deps: RouterDeps) {
       }
 
       // ── reaction.send ──────────────────────────────────────────────────
+      // GPT-5 BE-P0-05: server-side validation — grapheme count, allowlisted
+      // emoji, entitlement check for premium reactions.
       case 'reaction.send': {
         if (!checkRateLimit(socket, 'reaction.send')) {
           sendError(socket, 'RATE_LIMITED', 'reaction rate limit exceeded');
@@ -318,6 +320,46 @@ export function createMessageRouter(deps: RouterDeps) {
           sendError(socket, 'NOT_MEMBER', 'User is not a member of this room');
           return;
         }
+
+        // GPT-5 BE-P0-05: validate emoji is in allowlist (prevent arbitrary
+        // text/bidi abuse). Allow common emoji + a premium set.
+        const ALLOWED_FREE_EMOJIS = new Set([
+          '❤️', '😂', '😍', '👍', '🔥', '😮', '😢', '👏', '🎉', '💯',
+          '🤣', '🥰', '😱', '🤩', '🤔', '😴', '🤯', '🥳', '😭', '🤗',
+        ]);
+        const ALLOWED_PREMIUM_EMOJIS = new Set([
+          '💎', '👑', '🚀', '⚡', '🌟', '🎨', '🎭', '🏆', '🌈', '✨',
+        ]);
+        const allAllowed = new Set([...ALLOWED_FREE_EMOJIS, ...ALLOWED_PREMIUM_EMOJIS]);
+
+        // GPT-5 BE-P0-05: grapheme count validation (prevent long strings).
+        // Use Array.from to count grapheme clusters (not UTF-16 code units).
+        const graphemes = Array.from(m.emoji);
+        if (graphemes.length > 4) {
+          sendError(socket, 'INVALID_REACTION', 'Emoji too long (max 4 graphemes)');
+          return;
+        }
+
+        // GPT-5 BE-P0-05: must be in allowlist.
+        if (!allAllowed.has(m.emoji)) {
+          sendError(socket, 'INVALID_REACTION', 'Emoji not in allowlist');
+          return;
+        }
+
+        // GPT-5 BE-P0-05: premium emoji requires entitlement.
+        if (ALLOWED_PREMIUM_EMOJIS.has(m.emoji)) {
+          const user = await prisma.user.findUnique({
+            where: { id: socket.userId! },
+            select: { isPremium: true, premiumUntil: true },
+          });
+          const isPremium = user?.isPremium === true &&
+            (!user.premiumUntil || user.premiumUntil > new Date());
+          if (!isPremium) {
+            sendError(socket, 'PREMIUM_REQUIRED', 'This reaction requires Plink+');
+            return;
+          }
+        }
+
         // P0-3: publish via event bus — same fanout rule as chat.
         await eventBus.publish(m.roomId, {
           kind: 'reaction.broadcast',

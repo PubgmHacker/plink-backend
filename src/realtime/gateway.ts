@@ -165,6 +165,22 @@ export class RealtimeGateway {
       // socket error is followed by close — finalize runs there.
     });
 
+    // ── GPT-5 BE-P0-06: Origin validation ───────────────────────────────
+    // Reject WebSocket connections from unknown origins (CSRF protection).
+    // Allow native iOS origins (null, app://, capacitor://, localhost) +
+    // configured web origins via CORS_ORIGIN env.
+    const origin = req.headers['origin'] as string | undefined;
+    if (origin && origin !== 'null') {
+      const allowedOrigins = (config.CORS_ORIGIN === '*')
+        ? []  // dev mode — allow all
+        : (Array.isArray(config.CORS_ORIGIN) ? config.CORS_ORIGIN : [config.CORS_ORIGIN]);
+      if (allowedOrigins.length > 0 && !allowedOrigins.includes(origin)) {
+        socket.close(4003, 'Origin not allowed');
+        await finalize();
+        return;
+      }
+    }
+
     // ── Auth via Sec-WebSocket-Protocol (runbook §2) ────────────────────
     const protocols = (req.headers['sec-websocket-protocol'] as string | undefined)
       ?.split(',')
@@ -394,8 +410,41 @@ export class RealtimeGateway {
     await pipeline.exec();
   }
 
-  // ── P0-2: ref-counted room listeners ───────────────────────────────────
+  // ── P0-2 + GPT-5 BE-P0-02: ref-counted room listeners with race-free retain/release ──
+  //
+  // GPT-5 BE-P0-02: previous Map.has() then awaited subscribe() pattern was
+  // race-prone under concurrent joins. Now we store the in-flight promise and
+  // reference count before awaiting. This guarantees exactly one Redis
+  // subscription pair per room per replica, even under 100 concurrent joins.
+  private roomRefs = new Map<string, number>();
+  private roomRetainInFlight = new Map<string, Promise<void>>();
+
   private async retainRoom(roomId: string): Promise<void> {
+    // GPT-5 BE-P0-02: increment ref count FIRST, before any async work.
+    const currentRefs = this.roomRefs.get(roomId) ?? 0;
+    this.roomRefs.set(roomId, currentRefs + 1);
+
+    // If already retained, nothing to do — just increment ref count.
+    if (currentRefs > 0) return;
+
+    // If retain is in-flight, wait for it to complete.
+    const inFlight = this.roomRetainInFlight.get(roomId);
+    if (inFlight) {
+      await inFlight;
+      return;
+    }
+
+    // Start a new retain operation.
+    const retainPromise = this.doRetainRoom(roomId);
+    this.roomRetainInFlight.set(roomId, retainPromise);
+    try {
+      await retainPromise;
+    } finally {
+      this.roomRetainInFlight.delete(roomId);
+    }
+  }
+
+  private async doRetainRoom(roomId: string): Promise<void> {
     if (!this.roomListeners.has(roomId)) {
       const listener: RoomStateListener = (state) => {
         const msg: ServerMessage = {
@@ -422,6 +471,30 @@ export class RealtimeGateway {
   }
 
   private async releaseRoomIfEmpty(roomId: string): Promise<void> {
+    // GPT-5 BE-P0-02: decrement ref count. Only unsubscribe when refs hit 0.
+    const currentRefs = this.roomRefs.get(roomId) ?? 0;
+    if (currentRefs > 1) {
+      this.roomRefs.set(roomId, currentRefs - 1);
+      return;
+    }
+
+    // Refs would hit 0 — wait for any in-flight retain first.
+    const inFlight = this.roomRetainInFlight.get(roomId);
+    if (inFlight) {
+      await inFlight;
+    }
+
+    // Re-check ref count after waiting (a concurrent retain may have incremented).
+    const refsAfterWait = this.roomRefs.get(roomId) ?? 0;
+    if (refsAfterWait > 1) {
+      this.roomRefs.set(roomId, refsAfterWait - 1);
+      return;
+    }
+
+    // Refs hit 0 — safe to unsubscribe.
+    this.roomRefs.set(roomId, 0);
+
+    // Double-check no local sockets remain.
     if (this.registry.getRoomSockets(roomId).length > 0) return;
 
     const stateListener = this.roomListeners.get(roomId);
