@@ -308,3 +308,24 @@ model AdBreak {
 
   @@index([roomID])
 }
+
+// GPT-5.6 §14: AI Moderation Audit
+model AIModerationAudit {
+  id             String   @id @default(cuid())
+  roomId         String
+  messageId      String
+  subjectUserId  String
+  action         String
+  reasonCode     String
+  confidence     Float?
+  policyVersion  String
+  modelVersion   String?
+  evidenceHash   String
+  reversible     Boolean  @default(true)
+  reviewedBy     String?
+  reviewedAt     DateTime?
+  createdAt      DateTime @default(now())
+
+  @@index([roomId, createdAt])
+  @@index([subjectUserId, createdAt])
+}
