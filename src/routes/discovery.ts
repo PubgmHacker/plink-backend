@@ -30,8 +30,11 @@ const MAX_LIMIT = 50;
 export async function discoveryRoutes(fastify: FastifyInstance, _options: any) {
   // ═══════════════════════════════════════════════════════════════════
   // GET /api/discovery/popular?window=24h&limit=20
+  // Brain Revision 3: requires Plink auth (preHandler). Returns 200 with
+  // results, 200 with empty array if no public rooms, 401 if no auth.
   // ═══════════════════════════════════════════════════════════════════
   fastify.get('/discovery/popular', {
+    preHandler: [(fastify as any).authenticate],
     config: { rateLimit: { max: 60, timeWindow: '1 minute' } },
   }, async (request: FastifyRequest, reply: FastifyReply) => {
     const query = request.query as any;
@@ -44,31 +47,47 @@ export async function discoveryRoutes(fastify: FastifyInstance, _options: any) {
       // Aggregate room activity in the window.
       // Group by mediaItem (which is the content URL/title identifier) and
       // count unique viewers and rooms.
-      const rows = await prisma.$queryRaw<Array<{
+      // NOTE: Prisma uses camelCase field names in PostgreSQL by default
+      // (e.g. "roomID" not "roomId", "userID" not "userId"). The table names
+      // match the model names exactly ("Room", "RoomParticipant", "Report").
+      let rows: Array<{
         media_item: string | null;
         room_name: string;
         unique_viewers: bigint;
         unique_rooms: bigint;
         recent_starts: bigint;
-      }>>`
-        SELECT
-          r."mediaItem" AS media_item,
-          MAX(r."name") AS room_name,
-          COUNT(DISTINCT rp."userID") AS unique_viewers,
-          COUNT(DISTINCT r."id") AS unique_rooms,
-          COUNT(DISTINCT CASE WHEN rp."joinedAt" >= ${since} THEN rp."userID" END) AS recent_starts
-        FROM "Room" r
-        INNER JOIN "RoomParticipant" rp ON rp."roomID" = r."id"
-        WHERE
-          r."createdAt" >= ${since}
-          AND r."privacy" = 'public'
-          AND r."password" IS NULL
-          AND r."id" NOT IN (SELECT "roomId" FROM "Report" WHERE "status" = 'pending')
-        GROUP BY r."mediaItem"
-        HAVING COUNT(DISTINCT rp."userID") >= ${MIN_COHORT_FOR_PRIVACY}
-        ORDER BY unique_viewers DESC, unique_rooms DESC
-        LIMIT ${limit}
-      `;
+      }> = [];
+      try {
+        rows = await prisma.$queryRaw`
+          SELECT
+            r."mediaItem" AS media_item,
+            MAX(r."name") AS room_name,
+            COUNT(DISTINCT rp."userID") AS unique_viewers,
+            COUNT(DISTINCT r."id") AS unique_rooms,
+            COUNT(DISTINCT CASE WHEN rp."joinedAt" >= ${since} THEN rp."userID" END) AS recent_starts
+          FROM "Room" r
+          INNER JOIN "RoomParticipant" rp ON rp."roomID" = r."id"
+          WHERE
+            r."createdAt" >= ${since}
+            AND r."privacy" = 'public'
+            AND r."password" IS NULL
+            AND r."id" NOT IN (SELECT "roomID" FROM "Report" WHERE "status" = 'pending')
+          GROUP BY r."mediaItem"
+          HAVING COUNT(DISTINCT rp."userID") >= ${MIN_COHORT_FOR_PRIVACY}
+          ORDER BY unique_viewers DESC, unique_rooms DESC
+          LIMIT ${limit}
+        `;
+      } catch (queryErr: any) {
+        // If the query fails (e.g. column missing, table doesn't exist yet),
+        // return an empty array instead of 500. This keeps the Home rail hidden
+        // rather than crashing the endpoint.
+        request.log.warn({ err: queryErr.message }, 'discovery/popular query failed — returning empty');
+        return reply.send({
+          window: `${windowHours}h`,
+          generatedAt: new Date().toISOString(),
+          results: [],
+        });
+      }
 
       const results = rows.map((row) => ({
         // mediaItem is opaque content identifier (URL or video ID).
