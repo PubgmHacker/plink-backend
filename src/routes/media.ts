@@ -25,6 +25,11 @@ export default async function mediaRoutes(fastify, _options) {
   //      specific data is exposed.
   //   3. Rate limiting (30 req/min) still protects against quota abuse.
   //   4. YOUTUBE_API_KEY is server-side only — never exposed to clients.
+  //
+  // Brain Phase 3: after search.list, batch IDs through videos.list with
+  // part=snippet,contentDetails,status to populate embeddable, privacyStatus,
+  // liveBroadcastContent, durationSeconds. iOS uses embeddable to disable
+  // rows where the video cannot be embedded in Plink.
   // ═══════════════════════════════════════════════════════════════════
   fastify.get('/media/search', {
     config: { rateLimit: { max: 30, timeWindow: '1 minute' } }
@@ -41,15 +46,15 @@ export default async function mediaRoutes(fastify, _options) {
     const cached = await cacheGet<any[]>(cacheKey);
     if (cached) return reply.send({ results: cached });
 
-    const url = new URL('https://www.googleapis.com/youtube/v3/search');
-    url.searchParams.set('part', 'snippet');
-    url.searchParams.set('q', q);
-    url.searchParams.set('type', 'video');
-    url.searchParams.set('maxResults', String(limit));
-    url.searchParams.set('key', YOUTUBE_API_KEY);
+    const searchUrl = new URL('https://www.googleapis.com/youtube/v3/search');
+    searchUrl.searchParams.set('part', 'snippet');
+    searchUrl.searchParams.set('q', q);
+    searchUrl.searchParams.set('type', 'video');
+    searchUrl.searchParams.set('maxResults', String(limit));
+    searchUrl.searchParams.set('key', YOUTUBE_API_KEY);
 
     try {
-      const resp = await fetch(url.toString());
+      const resp = await fetch(searchUrl.toString());
       if (!resp.ok) {
         const errText = await resp.text();
         console.error('YouTube API error', resp.status, errText);
@@ -57,23 +62,65 @@ export default async function mediaRoutes(fastify, _options) {
       }
       const data: any = await resp.json();
 
-      const results = (data.items || [])
+      const videoIds: string[] = (data.items || [])
         .filter((item: any) => item.id?.videoId)
-        .map((item: any) => {
-          const videoId = item.id.videoId;
-          return {
-            id: videoId,
-            title: item.snippet?.title || '',
-            channel: item.snippet?.channelTitle || '',
-            thumbnailURL: item.snippet?.thumbnails?.medium?.url ||
-                          item.snippet?.thumbnails?.default?.url || null,
-            duration: null,
-            // 🔧 FIX: iOS YouTubeSearchResult requires `url` field — without it,
-            // Decodable fails silently and the user sees empty search results.
-            // Return watch URL so iOS can pass it directly to RoomSetupView.
-            url: `https://www.youtube.com/watch?v=${videoId}`,
-          };
-        });
+        .map((item: any) => item.id.videoId);
+
+      if (videoIds.length === 0) {
+        await cacheSet(cacheKey, [], 600);
+        return reply.send({ results: [] });
+      }
+
+      // Brain Phase 3: batch videos.list to fetch embeddable + duration + status
+      const detailsUrl = new URL('https://www.googleapis.com/youtube/v3/videos');
+      detailsUrl.searchParams.set('part', 'snippet,contentDetails,status');
+      detailsUrl.searchParams.set('id', videoIds.join(','));
+      detailsUrl.searchParams.set('key', YOUTUBE_API_KEY);
+
+      const detailsResp = await fetch(detailsUrl.toString());
+      const detailsData: any = detailsResp.ok ? await detailsResp.json() : { items: [] };
+
+      // Index details by video ID for O(1) lookup
+      const detailsById: Record<string, any> = {};
+      for (const item of detailsData.items || []) {
+        detailsById[item.id] = item;
+      }
+
+      // Build results preserving search order, enriched with status fields
+      const results = videoIds.map((videoId) => {
+        const searchItem = (data.items || []).find((i: any) => i.id?.videoId === videoId);
+        const detail = detailsById[videoId];
+
+        // Parse ISO 8601 duration
+        let durationSeconds: number | null = null;
+        const dur = detail?.contentDetails?.duration;
+        if (dur) {
+          const match = dur.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);
+          if (match) {
+            const hours = parseInt(match[1] || '0');
+            const mins = parseInt(match[2] || '0');
+            const secs = parseInt(match[3] || '0');
+            durationSeconds = hours * 3600 + mins * 60 + secs;
+          }
+        }
+
+        return {
+          id: videoId,
+          videoId,
+          title: searchItem?.snippet?.title || detail?.snippet?.title || '',
+          channel: searchItem?.snippet?.channelTitle || detail?.snippet?.channelTitle || '',
+          channelTitle: searchItem?.snippet?.channelTitle || detail?.snippet?.channelTitle || '',
+          thumbnailURL: searchItem?.snippet?.thumbnails?.medium?.url ||
+                        detail?.snippet?.thumbnails?.medium?.url ||
+                        searchItem?.snippet?.thumbnails?.default?.url ||
+                        detail?.snippet?.thumbnails?.default?.url || null,
+          durationSeconds,
+          liveBroadcastContent: detail?.snippet?.liveBroadcastContent || 'none',
+          embeddable: detail?.status?.embeddable ?? true,
+          privacyStatus: detail?.status?.privacyStatus || null,
+          url: `https://www.youtube.com/watch?v=${videoId}`,
+        };
+      });
 
       await cacheSet(cacheKey, results, 600); // 10 min
       reply.send({ results });
@@ -102,9 +149,10 @@ export default async function mediaRoutes(fastify, _options) {
     const cached = await cacheGet<any[]>(cacheKey);
     if (cached) return reply.send({ results: cached });
 
-    // Use videos.list with chart=mostPopular to get trending videos
+    // Use videos.list with chart=mostPopular to get trending videos.
+    // Brain Phase 3: include `status` part to populate embeddable + privacyStatus.
     const url = new URL('https://www.googleapis.com/youtube/v3/videos');
-    url.searchParams.set('part', 'snippet,contentDetails');
+    url.searchParams.set('part', 'snippet,contentDetails,status');
     url.searchParams.set('chart', 'mostPopular');
     url.searchParams.set('regionCode', regionCode);
     url.searchParams.set('maxResults', String(maxResults));
@@ -125,24 +173,29 @@ export default async function mediaRoutes(fastify, _options) {
         .map((item: any) => {
           const videoId = item.id;
           // Parse ISO 8601 duration (PT1H30M15S → 5415 seconds)
-          let duration: number | null = null;
+          let durationSeconds: number | null = null;
           if (item.contentDetails?.duration) {
             const match = item.contentDetails.duration.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);
             if (match) {
               const hours = parseInt(match[1] || '0');
               const mins = parseInt(match[2] || '0');
               const secs = parseInt(match[3] || '0');
-              duration = hours * 3600 + mins * 60 + secs;
+              durationSeconds = hours * 3600 + mins * 60 + secs;
             }
           }
           return {
             id: videoId,
+            videoId,
             title: item.snippet?.title || '',
             channel: item.snippet?.channelTitle || '',
+            channelTitle: item.snippet?.channelTitle || '',
             thumbnailURL: item.snippet?.thumbnails?.medium?.url ||
                           item.snippet?.thumbnails?.high?.url ||
                           item.snippet?.thumbnails?.default?.url || null,
-            duration: duration,
+            durationSeconds,
+            liveBroadcastContent: item.snippet?.liveBroadcastContent || 'none',
+            embeddable: item.status?.embeddable ?? true,
+            privacyStatus: item.status?.privacyStatus || null,
             url: `https://www.youtube.com/watch?v=${videoId}`,
           };
         });
