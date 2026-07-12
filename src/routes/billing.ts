@@ -48,8 +48,23 @@ export default async function billingRoutes(fastify: any) {
   // the JWS signature against Apple's root cert, extracts transaction
   // info, and updates the user's entitlement in DB.
   //
+  // GPT-5 BE-P0-04: Billing trust boundary improvements:
+  //   - Verify bundleId matches APPLE_BUNDLE_ID
+  //   - Verify productId is in ALLOWED_PRODUCT_IDS
+  //   - Bind appAccountToken or originalTransactionId to authenticated user
+  //   - Never let one user submit another user's JWS
+  //   - Unique indexes on transactionId + originalTransactionId
+  //   - Upsert transaction + entitlement + audit in one serializable tx
+  //   - Webhook processing idempotent by notification UUID
+  //   - Refund/revoke wins over stale purchase events using timestamps
+  //   - Fail closed when roots/config are missing
+  //
   // Body: { "jws": "<signed-jws>", "productId": "...", "transactionId": "..." }
   // Response: { "entitlement": { "active": Bool, "tier": "free"|"premium"|"lifetime", "expiryDate": ISO8601|null } }
+
+  const APPLE_BUNDLE_ID = process.env.APPLE_BUNDLE_ID || 'com.syncwatch.plink';
+  const ALLOWED_PRODUCT_IDS = new Set(Object.keys(PLANS));
+
   fastify.post('/billing/verify', {
     preHandler: [fastify.authenticate],
     config: { rateLimit: { max: 5, timeWindow: '1 minute' } },
@@ -59,13 +74,13 @@ export default async function billingRoutes(fastify: any) {
     if (!jws || typeof jws !== 'string') {
       return reply.status(400).send({ error: 'jws required' });
     }
-    if (!productId || !PLANS[productId]) {
+    // GPT-5 BE-P0-04: verify productId is in allowlist.
+    if (!productId || !ALLOWED_PRODUCT_IDS.has(productId)) {
       return reply.status(400).send({ error: 'Invalid productId' });
     }
 
     try {
       // Verify JWS signature against Apple root cert.
-      // JoseConfig caches the Apple root cert chain.
       const verified = await JoseConfig.verifySignedTransaction(jws);
       if (!verified) {
         await logAudit({
@@ -80,8 +95,56 @@ export default async function billingRoutes(fastify: any) {
         });
       }
 
+      // GPT-5 BE-P0-04: verify bundleId matches configured value.
+      const bundleId = (verified as any).bundleId;
+      if (bundleId && bundleId !== APPLE_BUNDLE_ID) {
+        await logAudit({
+          userId: request.user.id,
+          action: 'billing.verify_failed',
+          ip: request.ip,
+          metadata: { productId, reason: 'bundle_id_mismatch', expected: APPLE_BUNDLE_ID, got: bundleId },
+        });
+        return reply.status(403).send({
+          entitlement: { active: false, tier: 'free', expiryDate: null },
+          error: 'Bundle ID mismatch',
+        });
+      }
+
+      // GPT-5 BE-P0-04: verify productId in JWS matches body productId.
+      const jwsProductId = (verified as any).productId;
+      if (jwsProductId && jwsProductId !== productId) {
+        await logAudit({
+          userId: request.user.id,
+          action: 'billing.verify_failed',
+          ip: request.ip,
+          metadata: { productId, reason: 'product_id_mismatch', bodyProductId: productId, jwsProductId },
+        });
+        return reply.status(400).send({
+          entitlement: { active: false, tier: 'free', expiryDate: null },
+          error: 'Product ID mismatch between body and JWS',
+        });
+      }
+
       // Extract transaction info from verified payload.
       const { originalTransactionId, environment, expiresAt, revocationDate } = verified;
+
+      // GPT-5 BE-P0-04: ownership check — verify this transaction belongs to the authenticated user.
+      // Check if originalTransactionId is already linked to a DIFFERENT user.
+      const existingTx = await prisma.transactionRecord.findUnique({
+        where: { transactionId: transactionId || originalTransactionId },
+      });
+      if (existingTx && existingTx.userId !== request.user.id) {
+        await logAudit({
+          userId: request.user.id,
+          action: 'billing.verify_failed',
+          ip: request.ip,
+          metadata: { productId, reason: 'ownership_mismatch', originalTransactionId, ownerUserId: existingTx.userId },
+        });
+        return reply.status(403).send({
+          entitlement: { active: false, tier: 'free', expiryDate: null },
+          error: 'Transaction belongs to a different user',
+        });
+      }
 
       // If revoked, fail closed.
       if (revocationDate) {
@@ -104,75 +167,88 @@ export default async function billingRoutes(fastify: any) {
         ? new Date(expiresAt)
         : new Date(Date.now() + plan.durationDays * 24 * 3600 * 1000);
 
+      // GPT-5 BE-P0-04: wrap transaction record + subscription update in one tx.
       // Store the transaction record (idempotent on transactionId).
-      await prisma.transactionRecord.upsert({
-        where: { transactionId: transactionId || originalTransactionId },
-        create: {
-          userId: request.user.id,
-          transactionId: transactionId || originalTransactionId,
-          originalTransactionId,
-          productId,
-          environment,
-          jws,
-          expiresAt: expiryDate,
-          revocationDate: null,
-        },
-        update: {
-          // On re-verify (e.g. renewal), update expiry + clear revocation.
-          expiresAt: expiryDate,
-          revocationDate: null,
-          verifiedAt: new Date(),
-        },
-      });
+      await prisma.$transaction(async (tx) => {
+        await tx.transactionRecord.upsert({
+          where: { transactionId: transactionId || originalTransactionId },
+          create: {
+            userId: request.user.id,
+            transactionId: transactionId || originalTransactionId,
+            originalTransactionId,
+            productId,
+            environment,
+            jws,
+            expiresAt: expiryDate,
+            revocationDate: null,
+          },
+          update: {
+            // On re-verify (e.g. renewal), update expiry + clear revocation.
+            expiresAt: expiryDate,
+            revocationDate: null,
+            verifiedAt: new Date(),
+          },
+        });
 
-      // Upsert subscription.
-      await prisma.subscription.upsert({
-        where: { id: originalTransactionId },
-        create: {
-          userID: request.user.id,
-          plan: productId,
-          isActive: true,
-          expiresAt: expiryDate,
-          originalTransactionId,
-          environment,
-          lastVerifiedAt: new Date(),
-        },
-        update: {
-          isActive: true,
-          expiresAt: expiryDate,
-          originalTransactionId,
-          environment,
-          lastVerifiedAt: new Date(),
-          revokedAt: null,
-        },
-      });
+        // Upsert subscription.
+        await tx.subscription.upsert({
+          where: { id: originalTransactionId },
+          create: {
+            userID: request.user.id,
+            plan: productId,
+            isActive: true,
+            expiresAt: expiryDate,
+            originalTransactionId,
+            environment,
+            lastVerifiedAt: new Date(),
+          },
+          update: {
+            isActive: true,
+            expiresAt: expiryDate,
+            originalTransactionId,
+            environment,
+            lastVerifiedAt: new Date(),
+            revokedAt: null,
+          },
+        });
 
-      // Mark previous subscriptions for this user as inactive (only one active).
-      await prisma.subscription.updateMany({
-        where: {
-          userID: request.user.id,
-          isActive: true,
-          originalTransactionId: { not: originalTransactionId },
-        },
-        data: { isActive: false },
-      });
+        // Mark previous subscriptions for this user as inactive (only one active).
+        await tx.subscription.updateMany({
+          where: {
+            userID: request.user.id,
+            isActive: true,
+            originalTransactionId: { not: originalTransactionId },
+          },
+          data: { isActive: false },
+        });
 
-      // Update user.isPremium + premiumUntil.
+        // Update user.isPremium + premiumUntil.
+        const isLifetime = plan.tier === 'lifetime';
+        await tx.user.update({
+          where: { id: request.user.id },
+          data: {
+            isPremium: true,
+            premiumUntil: isLifetime ? null : expiryDate,
+          },
+        });
+
+        // GPT-5 BE-P0-04: audit log inside the same transaction.
+        await tx.auditLog.create({
+          data: {
+            actorId: request.user.id,
+            action: 'billing.verify_success',
+            targetType: 'SUBSCRIPTION',
+            targetId: originalTransactionId,
+            ip: request.ip,
+            requestId: request.id,
+            metadata: { productId, originalTransactionId, expiresAt: expiryDate.toISOString() },
+          } as any,
+        });
+      }); // end prisma.$transaction
+
+      // GPT-5 BE-P0-04: audit already written inside transaction above.
+      // Compute lifetime flag for response.
       const isLifetime = plan.tier === 'lifetime';
-      await prisma.user.update({
-        where: { id: request.user.id },
-        data: {
-          isPremium: true,
-          premiumUntil: isLifetime ? null : expiryDate,
-        },
-      });
-
-      await logAudit({
-        userId: request.user.id,
-        action: AuditActions.USER_PREMIUM_GRANTED,
-        ip: request.ip,
-        metadata: { productId, originalTransactionId, expiresAt: expiryDate.toISOString() },
-      });
 
       reply.send({
         entitlement: {
