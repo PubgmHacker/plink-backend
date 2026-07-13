@@ -5,7 +5,9 @@ import { prisma } from '../config/db.js';
 // APNs configuration — uses .p8 key file (recommended over certificates)
 const APNS_KEY_ID = process.env.APNS_KEY_ID;
 const APNS_TEAM_ID = process.env.APNS_TEAM_ID;
-const APNS_KEY_PATH = process.env.APNS_KEY_PATH;  // path to .p8 file
+// start.sh writes the key from APNS_KEY_CONTENT env var to /app/AuthKey.p8
+const APNS_KEY_PATH = process.env.APNS_KEY_PATH || '/app/AuthKey.p8';
+const APNS_KEY_CONTENT = process.env.APNS_KEY_CONTENT;  // raw .p8 content as env var
 const APNS_BUNDLE_ID = process.env.APNS_BUNDLE_ID || 'com.syncwatch.plink';
 const APNS_PRODUCTION = process.env.APNS_PRODUCTION !== 'false';
 
@@ -59,16 +61,31 @@ export async function sendPushToUsers(userIds: string[], payload: PushPayload): 
  * Uses JWT authentication with .p8 key.
  */
 async function sendViaAPNs(deviceToken: string, payload: PushPayload): Promise<boolean> {
-  if (!APNS_KEY_ID || !APNS_TEAM_ID || !APNS_KEY_PATH) {
-    console.warn('[pushService] APNs not configured. Set APNS_KEY_ID, APNS_TEAM_ID, APNS_KEY_PATH env vars.');
+  if (!APNS_KEY_ID || !APNS_TEAM_ID) {
+    console.warn('[pushService] APNs not configured. Need APNS_KEY_ID + APNS_TEAM_ID + APNS_KEY_CONTENT.');
     return false;
   }
 
   try {
-    // Dynamic import of jose for JWT signing (already in dependencies)
+    // Get key data — either from env var (APNS_KEY_CONTENT) or from file (APNS_KEY_PATH)
+    let keyData: string;
+    if (APNS_KEY_CONTENT) {
+      // Key content stored directly in env var (Railway-friendly)
+      keyData = APNS_KEY_CONTENT.includes('-----BEGIN PRIVATE KEY-----')
+        ? APNS_KEY_CONTENT
+        : `-----BEGIN PRIVATE KEY-----\n${APNS_KEY_CONTENT}\n-----END PRIVATE KEY-----`;
+    } else {
+      // Try reading from file (written by start.sh)
+      const fs = await import('fs');
+      try {
+        keyData = fs.readFileSync(APNS_KEY_PATH, 'utf8');
+      } catch {
+        console.warn(`[pushService] APNs key file not found at ${APNS_KEY_PATH} and APNS_KEY_CONTENT not set.`);
+        return false;
+      }
+    }
+
     const { SignJWT, importPKCS8 } = await import('jose');
-    const fs = await import('fs');
-    const keyData = fs.readFileSync(APNS_KEY_PATH, 'utf8');
     const privateKey = await importPKCS8(keyData, 'ES256');
 
     // Generate JWT for APNs auth
