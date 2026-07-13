@@ -1,4 +1,5 @@
 import { prisma } from '../config/db.js';
+import { sendPushToUser, PushTemplates } from '../services/pushService.js';
 
 export default async function friendRoutes(fastify) {
   fastify.get('/friends', { preHandler: [fastify.authenticate] }, async (request, reply) => {
@@ -38,6 +39,31 @@ export default async function friendRoutes(fastify) {
     const req = await prisma.friendRequest.create({
       data: { fromUserID: request.user.id, toUserID: friendId }
     });
+
+    // AUDIT: fetch sender username for push notification
+    const sender = await prisma.user.findUnique({
+      where: { id: request.user.id },
+      select: { username: true }
+    });
+
+    // AUDIT Block 3.2/3.3: Send push notification to recipient
+    if (sender) {
+      const pushPayload = PushTemplates.friendRequest(sender.username);
+      sendPushToUser(friendId, pushPayload).catch(() => {});
+    }
+
+    // AUDIT Block 3.2: Send WebSocket event to recipient if online
+    try {
+      fastify.io?.to(`user:${friendId}`).emit('friend.request', {
+        fromUserId: request.user.id,
+        fromUsername: sender?.username || 'Unknown',
+        requestId: req.id,
+        timestamp: new Date().toISOString()
+      });
+    } catch (e) {
+      // WS delivery is best-effort
+    }
+
     reply.send(req);
   });
 
@@ -55,6 +81,26 @@ export default async function friendRoutes(fastify) {
     if (status === 'accepted') {
       await prisma.friendship.create({ data: { userID: req.fromUserID, friendID: req.toUserID } });
       await prisma.friendship.create({ data: { userID: req.toUserID, friendID: req.fromUserID } });
+
+      // AUDIT Block 3.2/3.3: Notify sender that request was accepted
+      const accepter = await prisma.user.findUnique({
+        where: { id: request.user.id },
+        select: { username: true }
+      });
+
+      if (accepter) {
+        const pushPayload = PushTemplates.friendAccepted(accepter.username);
+        sendPushToUser(req.fromUserID, pushPayload).catch(() => {});
+      }
+
+      // WebSocket event to sender
+      try {
+        fastify.io?.to(`user:${req.fromUserID}`).emit('friend.accepted', {
+          byUserId: request.user.id,
+          byUsername: accepter?.username || 'Unknown',
+          timestamp: new Date().toISOString()
+        });
+      } catch (e) {}
     }
 
     reply.send({ success: true });

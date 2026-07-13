@@ -2,6 +2,7 @@
 import { hashRoomPassword, verifyRoomPassword, requireHost } from '../middleware/security.js';
 import { cacheGet, cacheSet, cacheDel } from '../config/redis.js';
 import { logAudit, AuditActions } from '../utils/audit.js';
+import { sendPushToUsers, PushTemplates } from '../services/pushService.js';
 
 const ROOMS_CACHE_KEY = 'rooms:public:50';
 const ROOMS_CACHE_TTL = 30; // 30 sec
@@ -105,6 +106,29 @@ export default async function roomRoutes(fastify, _options) {
             ip: request.ip,
             metadata: { roomId: room.id, roomCode: room.code },
         });
+
+        // AUDIT Block 3.3: Notify host's friends about new room (push notification)
+        // Only for public rooms — don't notify for private rooms
+        if ((privacy || 'public') === 'public') {
+            try {
+                const friendships = await prisma.friendship.findMany({
+                    where: { userID: request.user.id },
+                    select: { friendID: true }
+                });
+                const friendIds = friendships.map(f => f.friendID);
+                if (friendIds.length > 0) {
+                    const pushPayload = PushTemplates.roomInvite(
+                        resolvedHostName,
+                        name || 'Новая комната',
+                        room.code
+                    );
+                    // Don't await — fire and forget, don't block room creation response
+                    sendPushToUsers(friendIds, pushPayload).catch(() => {});
+                }
+            } catch (e) {
+                // Push failure is non-fatal
+            }
+        }
 
         const { password: _, ...roomWithoutPassword } = room;
         // 🔧 FIX: parse mediaItem JSON string back to object for iOS
