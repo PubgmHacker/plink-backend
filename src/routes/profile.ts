@@ -83,10 +83,22 @@ export default async function profileRoutes(fastify) {
       return reply.status(400).send({ error: 'No fields to update' });
     }
 
-    // Проверка уникальности username
+    // Проверка уникальности username + Telegram-style validation
     if (data.username) {
+      // P0.5: same regex as signup — ^[A-Za-z][A-Za-z0-9_]{4,31}$
+      const usernameRegex = /^[A-Za-z][A-Za-z0-9_]{4,31}$/;
+      if (!usernameRegex.test(data.username)) {
+        return reply.status(400).send({
+          error: 'Username must be 5-32 characters, start with a letter, and contain only letters, numbers, and underscores'
+        });
+      }
+      // Normalize to lowercase for case-insensitive uniqueness
+      data.username = data.username.toLowerCase();
       const existing = await prisma.user.findFirst({
-        where: { username: data.username, NOT: { id: request.user.id } }
+        where: {
+          username: { equals: data.username, mode: 'insensitive' },
+          NOT: { id: request.user.id }
+        }
       });
       if (existing) return reply.status(409).send({ error: 'Username already taken' });
     }

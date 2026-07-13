@@ -23,14 +23,30 @@ export default async function authRoutes(fastify) {
         return reply.status(400).send({ error: 'Password must be at least 6 characters' });
       }
 
+      // P0.5: Telegram-style nickname validation
+      // ^[A-Za-z][A-Za-z0-9_]{4,31}$ — start with letter, 5-32 chars, letters/digits/underscore
+      const usernameRegex = /^[A-Za-z][A-Za-z0-9_]{4,31}$/;
+      if (!usernameRegex.test(username)) {
+        return reply.status(400).send({
+          error: 'Username must be 5-32 characters, start with a letter, and contain only letters, numbers, and underscores'
+        });
+      }
+
+      // Case-insensitive uniqueness check
+      const normalizedUsername = username.toLowerCase();
       const existing = await prisma.user.findFirst({
-        where: { OR: [{ email }, { username }] }
+        where: {
+          OR: [
+            { email },
+            { username: { equals: username, mode: 'insensitive' } }
+          ]
+        }
       });
       if (existing) return reply.status(409).send({ error: 'Email or username taken' });
 
       const hashedPassword = await bcrypt.hash(password, 10);
       const user = await prisma.user.create({
-        data: { email, username, password: hashedPassword, isOnline: true }
+        data: { email, username: normalizedUsername, password: hashedPassword, isOnline: true }
       });
 
       const tokens = await issueTokenPair(fastify, user.id, user.username, { role: user.role });
