@@ -384,4 +384,45 @@ export default async function authRoutes(fastify) {
       accessExpiresAt: tokens.accessExpiresAt
     });
   });
+
+  // ─────────────────────────────────────────────────────────────────────
+  // V5: POST /api/auth/promote-self
+  // ─────────────────────────────────────────────────────────────────────
+  // Allows a logged-in user to promote themselves to ADMIN if NO admin
+  // exists yet in the database (bootstrap path). Once the first admin
+  // exists, this endpoint returns 403.
+  //
+  // Use case: fresh deploy — the first user who signs up can claim admin
+  // without needing DB access. Subsequent users must be promoted by an
+  // existing admin via /api/admin/users/:id/promote.
+  fastify.post('/auth/promote-self', {
+    preHandler: [fastify.authenticate]
+  }, async (request, reply) => {
+    const existingAdmin = await prisma.user.findFirst({
+      where: { role: { in: ['ADMIN', 'FOUNDER'] } },
+      select: { id: true, email: true }
+    });
+
+    if (existingAdmin) {
+      return reply.status(403).send({
+        error: 'Admin already exists. Ask an existing admin to promote you.',
+        adminEmail: existingAdmin.email
+      });
+    }
+
+    const updated = await prisma.user.update({
+      where: { id: request.user.id },
+      data: { role: 'FOUNDER' },
+      select: { id: true, username: true, email: true, role: true }
+    });
+
+    await logAudit({
+      userId: request.user.id,
+      action: 'admin.self_promoted',
+      ip: request.ip,
+      metadata: { email: updated.email, bootstrap: true }
+    });
+
+    reply.send({ success: true, user: updated });
+  });
 }
