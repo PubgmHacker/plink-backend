@@ -35,6 +35,7 @@ import gdprRoutes from './routes/gdpr.js';
 import featureFlagRoutes from './routes/featureFlags.js';
 import aiRoutes from './routes/ai.js';
 import { livekitRoutes } from "./routes/livekit.js";
+import telemetryRoutes from './routes/telemetry.js';
 import { roomJoinDuration, syncDrift, syncHardCorrections, wsReconnectCount, presenceLeaseCount } from "./observability/slo-metrics.js";
 import { realtimeTicketRoutes } from './routes/realtime.js';
 import { legacyStreamRelayRoutes, shouldRegisterLegacyRelay } from './routes/legacy/legacyStreamRelay.js';
@@ -126,6 +127,7 @@ export async function buildApp(): Promise<{
   await fastify.register(aiRoutes, { prefix: '/api' });
 await fastify.register(livekitRoutes, { prefix: '/api' });  // Stage 9
   await fastify.register(realtimeTicketRoutes, { prefix: '/api' });
+  await fastify.register(telemetryRoutes, { prefix: '/api' });  // B3: sync telemetry
 
   // ── LEGACY stream relay (gated — App Store compliant builds skip) ──────
   // Runbook §7: 'APP_STORE_COMPLIANT=1: только официальный embedded/provider

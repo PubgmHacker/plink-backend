@@ -54,9 +54,30 @@ export default async function roomRoutes(fastify, _options) {
             if (user?.username) resolvedHostName = user.username;
         } catch {}
 
-        const hashedPassword = password 
-            ? await hashRoomPassword(password) 
+        const hashedPassword = password
+            ? await hashRoomPassword(password)
             : null;
+
+        // B6: SSRF protection — validate mediaItem.streamURL if present
+        if (mediaItem?.streamURL) {
+            const streamURL = String(mediaItem.streamURL);
+            try {
+                const parsed = new URL(streamURL);
+                // Only allow http/https schemes
+                if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+                    return reply.status(400).send({ error: `Invalid URL scheme: ${parsed.protocol}. Only http/https allowed.` });
+                }
+                // Block localhost, private IPs, and metadata endpoints
+                const hostname = parsed.hostname.toLowerCase();
+                const blockedHosts = ['localhost', '127.0.0.1', '0.0.0.0', '::1', 'metadata.google.internal'];
+                const privateIpPattern = /^(10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.|169\.254\.|::1$|fc00:|fe80:)/;
+                if (blockedHosts.includes(hostname) || privateIpPattern.test(hostname)) {
+                    return reply.status(400).send({ error: 'URLs pointing to local or private networks are not allowed.' });
+                }
+            } catch {
+                return reply.status(400).send({ error: 'Invalid streamURL format.' });
+            }
+        }
 
         // 🔧 SAFETY: simple create — no endedAt column (uses isActive: false
         // to mark ended rooms instead, history preserved in /rooms/mine query).

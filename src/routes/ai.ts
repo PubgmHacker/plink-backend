@@ -2,12 +2,18 @@
 import crypto from 'node:crypto';
 import { prisma } from '../config/db.js';
 import { logAudit, AuditActions } from '../utils/audit.js';
+import { redis } from '../config/redis.js';
 
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
 
-// P0.4: Pending AI actions store (in-memory, TTL 5 min).
-// In production, use Redis. For MVP, this works for single-instance deploys.
+// B5 (GPT-5.6 ADR-007): Feature flag for AI structured actions.
+// Set AI_ACTIONS_ENABLED=true to enable proposedAction creation.
+// Until function/tool calling is implemented, this stays false for external beta.
+const AI_ACTIONS_ENABLED = process.env.AI_ACTIONS_ENABLED === 'true';
+
+// B4 (GPT-5.6 ADR-008): Pending AI actions в Redis с TTL.
+// Fallback на in-memory Map если Redis не настроен (dev only).
 interface PendingAction {
   confirmationId: string;
   userId: string;
@@ -16,16 +22,80 @@ interface PendingAction {
   createdAt: number;
   expiresAt: number;
 }
-const pendingActions = new Map<string, PendingAction>();
-const ACTION_TTL_MS = 5 * 60 * 1000;  // 5 minutes
 
-// Cleanup expired actions every minute
-setInterval(() => {
-  const now = Date.now();
-  for (const [id, action] of pendingActions) {
-    if (action.expiresAt < now) pendingActions.delete(id);
+const ACTION_TTL_SECONDS = 5 * 60;  // 5 minutes
+const ACTION_KEY_PREFIX = 'plink:ai_action:';
+
+// In-memory fallback (dev only)
+const pendingActionsFallback = new Map<string, PendingAction>();
+
+async function savePendingAction(action: PendingAction): Promise<void> {
+  if (redis) {
+    await redis.set(
+      ACTION_KEY_PREFIX + action.confirmationId,
+      JSON.stringify(action),
+      'EX',
+      ACTION_TTL_SECONDS
+    );
+  } else {
+    pendingActionsFallback.set(action.confirmationId, action);
+    // Schedule cleanup
+    setTimeout(() => {
+      pendingActionsFallback.delete(action.confirmationId);
+    }, ACTION_TTL_SECONDS * 1000).unref?.();
   }
-}, 60_000).unref?.();
+}
+
+async function getPendingAction(confirmationId: string): Promise<PendingAction | null> {
+  if (redis) {
+    const data = await redis.get(ACTION_KEY_PREFIX + confirmationId);
+    if (!data) return null;
+    return JSON.parse(data);
+  } else {
+    const action = pendingActionsFallback.get(confirmationId);
+    if (!action) return null;
+    if (action.expiresAt < Date.now()) {
+      pendingActionsFallback.delete(confirmationId);
+      return null;
+    }
+    return action;
+  }
+}
+
+async function deletePendingAction(confirmationId: string): Promise<void> {
+  if (redis) {
+    // Atomic consume: use GETDEL if available (Redis 6.2+), else GET + DEL
+    await redis.del(ACTION_KEY_PREFIX + confirmationId);
+  } else {
+    pendingActionsFallback.delete(confirmationId);
+  }
+}
+
+// Atomic consume — returns the action if it exists and belongs to user,
+// then deletes it. Prevents race conditions on concurrent confirm.
+async function consumePendingAction(confirmationId: string, userId: string): Promise<PendingAction | null> {
+  if (redis) {
+    // Use Lua script for atomic get-check-delete
+    const script = `
+      local data = redis.call('GET', KEYS[1])
+      if not data then return nil end
+      local action = cjson.decode(data)
+      if action.userId ~= ARGV[1] then return false end
+      redis.call('DEL', KEYS[1])
+      return data
+    `;
+    const result = await redis.eval(script, 1, ACTION_KEY_PREFIX + confirmationId, userId);
+    if (result === null) return null;
+    if (result === false) return false as any;  // wrong user
+    return JSON.parse(result as string);
+  } else {
+    const action = pendingActionsFallback.get(confirmationId);
+    if (!action) return null;
+    if (action.userId !== userId) return false as any;
+    pendingActionsFallback.delete(confirmationId);
+    return action;
+  }
+}
 
 export default async function aiRoutes(fastify) {
   
@@ -84,10 +154,11 @@ export default async function aiRoutes(fastify) {
       // P0.4: Detect action intent from AI response. If user asked to create
       // a room, AI should mention "create_room" in response. We check for
       // keywords and create a pending action.
+      // B5: gated behind AI_ACTIONS_ENABLED feature flag.
       let proposedAction: any = null;
       const lowerMsg = aiMessage.toLowerCase();
 
-      if (lowerMsg.includes('созда') && (lowerMsg.includes('комнат') || lowerMsg.includes('room'))) {
+      if (AI_ACTIONS_ENABLED && lowerMsg.includes('созда') && (lowerMsg.includes('комнат') || lowerMsg.includes('room'))) {
         // AI wants to create a room — create pending action
         const confirmationId = crypto.randomUUID();
         const mediaItem = context?.mediaItem || {
@@ -96,7 +167,7 @@ export default async function aiRoutes(fastify) {
           streamURL: context?.url || '',
           source: 'youtube'
         };
-        pendingActions.set(confirmationId, {
+        const action: PendingAction = {
           confirmationId,
           userId: request.user.id,
           type: 'create_room',
@@ -107,14 +178,15 @@ export default async function aiRoutes(fastify) {
             maxParticipants: 10,
           },
           createdAt: Date.now(),
-          expiresAt: Date.now() + ACTION_TTL_MS,
-        });
+          expiresAt: Date.now() + ACTION_TTL_SECONDS * 1000,
+        };
+        await savePendingAction(action);
         proposedAction = {
           type: 'create_room',
           confirmationId,
-          expiresAt: new Date(Date.now() + ACTION_TTL_MS).toISOString(),
+          expiresAt: new Date(action.expiresAt).toISOString(),
           payloadPreview: {
-            title: pendingActions.get(confirmationId)!.payload.name,
+            title: action.payload.name,
             privacy: 'public',
             maxParticipants: 10,
             mediaTitle: mediaItem.title,
@@ -202,24 +274,21 @@ export default async function aiRoutes(fastify) {
       return reply.status(400).send({ error: 'confirmationId required' });
     }
 
-    const action = pendingActions.get(confirmationId);
-    if (!action) {
+    // B4: Atomic consume — get + verify ownership + delete in one Redis operation
+    const action = await consumePendingAction(confirmationId, request.user.id);
+
+    if (action === null) {
       return reply.status(404).send({ error: 'Action not found or expired' });
     }
 
-    // Verify ownership
-    if (action.userId !== request.user.id) {
+    if (action === false as any) {
       return reply.status(403).send({ error: 'Action belongs to another user' });
     }
 
-    // Verify not expired
+    // Verify not expired (Redis TTL handles this, but double-check)
     if (action.expiresAt < Date.now()) {
-      pendingActions.delete(confirmationId);
       return reply.status(410).send({ error: 'Action expired' });
     }
-
-    // Idempotency: remove the action before executing (one-shot)
-    pendingActions.delete(confirmationId);
 
     try {
       switch (action.type) {

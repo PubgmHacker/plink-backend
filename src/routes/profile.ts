@@ -9,16 +9,46 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export default async function profileRoutes(fastify) {
   // 🔧 NEW: POST /users/me/avatar — upload avatar as base64, save to disk,
   // return public URL. Stored in /uploads/avatars/USER_ID.jpg.
-  fastify.post('/users/me/avatar', { preHandler: [fastify.authenticate] }, async (request, reply) => {
+  // B6: rate limited + MIME validation + size limit.
+  fastify.post('/users/me/avatar', {
+    preHandler: [fastify.authenticate],
+    config: { rateLimit: { max: 5, timeWindow: '1 minute' } }
+  }, async (request, reply) => {
     const { avatar } = request.body;
 
     if (!avatar || typeof avatar !== 'string') {
       return reply.status(400).send({ error: 'Avatar data required' });
     }
 
-    // Remove data:image/jpeg;base64, prefix if present
+    // B6: Validate data URL prefix and extract MIME
+    const mimeMatch = avatar.match(/^data:(image\/(jpeg|jpg|png|webp));base64,/);
+    if (!mimeMatch) {
+      return reply.status(400).send({
+        error: 'Invalid avatar format. Expected data:image/(jpeg|png|webp);base64,...'
+      });
+    }
+    const mimeType = mimeMatch[1];
     const base64Data = avatar.replace(/^data:image\/\w+;base64,/, '');
     const buffer = Buffer.from(base64Data, 'base64');
+
+    // B6: Size limit — 2MB (GPT-5.6 spec)
+    if (buffer.length > 2 * 1024 * 1024) {
+      return reply.status(413).send({ error: 'Avatar too large. Max 2MB.' });
+    }
+
+    // B6: Validate image magic bytes (don't trust MIME header alone)
+    const magicBytes = buffer.subarray(0, 4);
+    let isValidImage = false;
+    if (buffer[0] === 0xFF && buffer[1] === 0xD8 && buffer[2] === 0xFF) {
+      isValidImage = true;  // JPEG
+    } else if (buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4E && buffer[3] === 0x47) {
+      isValidImage = true;  // PNG
+    } else if (buffer[0] === 0x52 && buffer[1] === 0x49 && buffer[2] === 0x46 && buffer[3] === 0x46) {
+      isValidImage = true;  // WebP (RIFF)
+    }
+    if (!isValidImage) {
+      return reply.status(400).send({ error: 'Invalid image data. Magic bytes do not match JPEG/PNG/WebP.' });
+    }
 
     // Create uploads directory if it doesn't exist
     const uploadsDir = path.join(__dirname, '..', '..', 'uploads', 'avatars');
@@ -26,8 +56,9 @@ export default async function profileRoutes(fastify) {
       fs.mkdirSync(uploadsDir, { recursive: true });
     }
 
-    // Save as USER_ID.jpg
-    const filename = `${request.user.id}.jpg`;
+    // Save with extension based on actual type
+    const ext = mimeType.includes('png') ? 'png' : mimeType.includes('webp') ? 'webp' : 'jpg';
+    const filename = `${request.user.id}.${ext}`;
     const filepath = path.join(uploadsDir, filename);
     fs.writeFileSync(filepath, buffer);
 
