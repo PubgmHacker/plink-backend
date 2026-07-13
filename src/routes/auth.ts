@@ -319,6 +319,29 @@ export default async function authRoutes(fastify) {
     reply.send({ success: true });
   });
 
+  // AUDIT Block 3.3: POST /api/auth/device-token — register APNs/FCM device token
+  // Called by iOS on every app launch after registerForRemoteNotifications.
+  fastify.post('/auth/device-token', {
+    preHandler: [fastify.authenticate],
+    config: { rateLimit: { max: 10, timeWindow: '1 minute' } }
+  }, async (request, reply) => {
+    const { token, platform } = request.body;
+
+    if (!token || typeof token !== 'string') {
+      return reply.status(400).send({ error: 'token required' });
+    }
+    if (!platform || !['ios', 'android'].includes(platform)) {
+      return reply.status(400).send({ error: 'platform must be "ios" or "android"' });
+    }
+
+    await prisma.user.update({
+      where: { id: request.user.id },
+      data: { deviceToken: token, devicePlatform: platform }
+    });
+
+    reply.send({ success: true });
+  });
+
   // ─────────────────────────────────────────────────────────────────────
   // V5 endpoints (Phase 4 of PLINK_MASTER_PLAN_10_OF_10.md)
   // ─────────────────────────────────────────────────────────────────────

@@ -368,6 +368,29 @@ export default async function roomRoutes(fastify, _options) {
         reply.send(safeRooms);
     });
 
+    // AUDIT Block 4.1: GET /api/rooms/active — user's current active room for resume
+    fastify.get('/rooms/active', {
+        preHandler: [fastify.authenticate]
+    }, async (request, reply) => {
+        // Find the most recent active room where user is host or participant
+        const room = await prisma.room.findFirst({
+            where: {
+                isActive: true,
+                OR: [
+                    { hostID: request.user.id },
+                    { participants: { some: { userID: request.user.id } } }
+                ]
+            },
+            include: { _count: { select: { participants: true } } },
+            orderBy: { createdAt: 'desc' },
+        });
+
+        if (!room) {
+            return reply.send({ room: null });
+        }
+        reply.send({ room: serializeRoom(room) });
+    });
+
     // P0-50/P0-56/P0-57: GET /api/rooms/:id/participants — active participant snapshot
     // P0-56: NO Redis KEYS — uses room-indexed ZSET + Lua to prune expired and return active userIds.
     // P0-57: host returned separately with online status, not forced into participants.
