@@ -343,6 +343,51 @@ export default async function authRoutes(fastify) {
   });
 
   // ─────────────────────────────────────────────────────────────────────
+  // EMERGENCY: POST /api/dev/wipe-db
+  // Wipes ALL data from the database. No authentication required —
+  // protected by a secret key passed in the request body.
+  // Use this when locked out and can't log out normally.
+  // ─────────────────────────────────────────────────────────────────────
+  fastify.post('/dev/wipe-db', async (request, reply) => {
+    const { key } = request.body ?? {};
+    // Simple secret — change in production. For dev emergency only.
+    if (key !== 'plink-wipe-2026') {
+      return reply.status(403).send({ error: 'Invalid wipe key' });
+    }
+    try {
+      // Delete in dependency order (children first, parents last)
+      await prisma.aIModerationAudit.deleteMany();
+      await prisma.adBreak.deleteMany();
+      await prisma.featureFlag.deleteMany();
+      await prisma.referral.deleteMany();
+      await prisma.auditLog.deleteMany();
+      await prisma.refreshToken.deleteMany();
+      await prisma.report.deleteMany();
+      await prisma.userBlock.deleteMany();
+      await prisma.transactionRecord.deleteMany();
+      await prisma.subscription.deleteMany();
+      await prisma.playbackState.deleteMany();
+      await prisma.watchHistory.deleteMany();
+      await prisma.friendship.deleteMany();
+      await prisma.friendRequest.deleteMany();
+      await prisma.directMessage.deleteMany();
+      await prisma.chatMessage.deleteMany();
+      await prisma.roomParticipant.deleteMany();
+      await prisma.room.deleteMany();
+      await prisma.user.deleteMany();
+
+      reply.send({
+        success: true,
+        message: 'Database wiped. All users, rooms, messages, friendships deleted.',
+        timestamp: new Date().toISOString()
+      });
+    } catch (err: any) {
+      console.error('[dev/wipe-db] ERROR:', err?.message);
+      reply.status(500).send({ error: 'Wipe failed', detail: err?.message });
+    }
+  });
+
+  // ─────────────────────────────────────────────────────────────────────
   // V5 endpoints (Phase 4 of PLINK_MASTER_PLAN_10_OF_10.md)
   // ─────────────────────────────────────────────────────────────────────
 
