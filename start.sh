@@ -12,6 +12,10 @@ echo "==== Step 1/3: prisma generate ===="
 npx prisma generate
 echo "==== Step 1/3 done ===="
 
+# Ensure uploads dir for avatars (persistent volume recommended on Railway)
+mkdir -p /app/uploads/avatars
+echo "Uploads dir ready"
+
 echo "==== Step 2/3: prisma migrate deploy ===="
 # Production-safe: applies pending migrations only, does NOT create new ones.
 # If migrations don't exist yet, you MUST run 'prisma migrate dev' locally,
