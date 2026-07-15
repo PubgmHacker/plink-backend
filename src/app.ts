@@ -122,11 +122,43 @@ export async function buildApp(): Promise<{
   await fastify.register(aiRoutes, { prefix: '/api' });
   await fastify.register(realtimeTicketRoutes, { prefix: '/api' });
 
-  // P0 voice (LiveKit): stub token endpoint.
-  // Returns 503 so client falls back gracefully (mesh for <=4 or disable voice).
-  // Full implementation requires separate LiveKit SFU deployment + config.LIVEKIT_SFU + /api/rtc/token proxy.
-  fastify.post('/api/rtc/token', { preHandler: [authenticate] }, async (_request, reply) => {
-    reply.status(503).send({ error: 'LiveKit SFU not configured', hint: 'Deploy LiveKit server and set LIVEKIT_SFU + credentials.' });
+  // P0.2 LIVEKIT real voice chat token
+  fastify.post('/api/rtc/token', { preHandler: [authenticate] }, async (request, reply) => {
+    const { roomId } = request.body as { roomId?: string };
+
+    if (!roomId) {
+      return reply.status(400).send({ error: 'roomId required' });
+    }
+
+    const LIVEKIT_URL = process.env.LIVEKIT_URL;
+    const LIVEKIT_API_KEY = process.env.LIVEKIT_API_KEY;
+    const LIVEKIT_API_SECRET = process.env.LIVEKIT_API_SECRET;
+
+    if (!LIVEKIT_URL || !LIVEKIT_API_KEY || !LIVEKIT_API_SECRET) {
+      return reply.status(503).send({ error: 'Voice chat not configured', hint: 'Set LIVEKIT_* env vars' });
+    }
+
+    // Premium gate on backend
+    const user = await prisma.user.findUnique({ where: { id: request.user.id } });
+    if (!user?.isPremium) {
+      return reply.status(403).send({ error: 'Voice chat requires Plink+ subscription' });
+    }
+
+    try {
+      // Dynamic import to avoid hard dep if not installed
+      const { AccessToken } = await import('livekit-server-sdk');
+      const at = new AccessToken(LIVEKIT_API_KEY, LIVEKIT_API_SECRET, {
+        identity: request.user.id,
+        name: request.user.username || 'user',
+      });
+      at.addGrant({ roomJoin: true, room: roomId, canPublish: true, canSubscribe: true });
+
+      const token = await at.toJwt();
+      reply.send({ token, url: LIVEKIT_URL, roomName: roomId });
+    } catch (e: any) {
+      console.error('[rtc] LiveKit token error', e);
+      reply.status(500).send({ error: 'Failed to generate token' });
+    }
   });
 
   // ── LEGACY stream relay (gated — App Store compliant builds skip) ──────
