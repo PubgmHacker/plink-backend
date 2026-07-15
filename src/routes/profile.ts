@@ -1,13 +1,8 @@
 import { prisma } from '../config/db.js';
-import fs from 'fs';
-import path from 'path';
-import { fileURLToPath } from 'url';
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 export default async function profileRoutes(fastify) {
-  // 🔧 NEW: POST /users/me/avatar — upload avatar as base64, save to disk,
-  // return public URL. Stored in /uploads/avatars/USER_ID.jpg.
+  // P0: POST /users/me/avatar — save base64 directly to DB as avatarData (no filesystem)
+  // This solves Railway /tmp and ephemeral storage issues. No files, no volumes needed.
   fastify.post('/users/me/avatar', { preHandler: [fastify.authenticate] }, async (request, reply) => {
     const { avatar } = request.body;
 
@@ -15,46 +10,21 @@ export default async function profileRoutes(fastify) {
       return reply.status(400).send({ error: 'Avatar data required' });
     }
 
-    // Remove data:image/jpeg;base64, prefix if present
-    const base64Data = avatar.replace(/^data:image\/\w+;base64,/, '');
-    const buffer = Buffer.from(base64Data, 'base64');
+    // Store the full base64 string (including prefix) or stripped — we store as-is for simplicity
+    // iOS will handle decoding. Limit size to avoid DB bloat (e.g. ~100KB per avatar)
+    const avatarData = avatar;
 
-    // Create uploads directory if it doesn't exist
-    const uploadsDir = path.join(__dirname, '..', '..', 'uploads', 'avatars');
-    if (!fs.existsSync(uploadsDir)) {
-      fs.mkdirSync(uploadsDir, { recursive: true });
-    }
-
-    // Save as USER_ID.jpg
-    const filename = `${request.user.id}.jpg`;
-    const filepath = path.join(uploadsDir, filename);
-    fs.writeFileSync(filepath, buffer);
-
-    // Public URL — served by Fastify static plugin or Railway
-    const avatarURL = `https://plink-backend-production-ef31.up.railway.app/uploads/avatars/${filename}`;
-
-    // Update user in DB
     await prisma.user.update({
       where: { id: request.user.id },
-      data: { avatarURL }
+      data: { avatarData }
     });
 
-    reply.send({ avatarURL });
-  });
-
-  // Serve uploaded files
-  fastify.get('/uploads/*', async (request, reply) => {
-    const filePath = path.join(__dirname, '..', '..', request.url);
-    if (fs.existsSync(filePath)) {
-      reply.type('image/jpeg').send(fs.createReadStream(filePath));
-    } else {
-      reply.status(404).send({ error: 'File not found' });
-    }
+    reply.send({ avatarData });
   });
   fastify.get('/users/me', { preHandler: [fastify.authenticate] }, async (request, reply) => {
     const user = await prisma.user.findUnique({
       where: { id: request.user.id },
-      select: { id: true, username: true, email: true, avatarURL: true, isPremium: true, premiumUntil: true, role: true, createdAt: true }
+      select: { id: true, username: true, email: true, avatarURL: true, avatarData: true, isPremium: true, premiumUntil: true, role: true, createdAt: true }
     });
     reply.send(user);
   });

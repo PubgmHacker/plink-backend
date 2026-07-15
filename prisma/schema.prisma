@@ -21,6 +21,8 @@ model User {
   email        String   @unique
   password     String
   avatarURL    String?
+  /// Base64-encoded avatar data (P0: move from filesystem to DB for persistence on Railway)
+  avatarData   String?
   /// 🔧 v11 (July 2026): Telegram-style display name (separate from @username).
   /// nil = use username as display name (backward compat).
   displayName  String?
