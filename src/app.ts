@@ -139,7 +139,8 @@ export async function buildApp(): Promise<{
     }
 
     // Premium gate on backend
-    const user = await prisma.user.findUnique({ where: { id: request.user.id } });
+    const reqUser = request.user as any;
+    const user = await prisma.user.findUnique({ where: { id: reqUser.id } });
     if (!user?.isPremium) {
       return reply.status(403).send({ error: 'Voice chat requires Plink+ subscription' });
     }
@@ -148,8 +149,8 @@ export async function buildApp(): Promise<{
       // Dynamic import to avoid hard dep if not installed
       const { AccessToken } = await import('livekit-server-sdk');
       const at = new AccessToken(LIVEKIT_API_KEY, LIVEKIT_API_SECRET, {
-        identity: request.user.id,
-        name: request.user.username || 'user',
+        identity: reqUser.id,
+        name: reqUser.username || 'user',
       });
       at.addGrant({ roomJoin: true, room: roomId, canPublish: true, canSubscribe: true });
 
