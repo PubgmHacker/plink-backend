@@ -30,6 +30,7 @@
     "fastify": "^5.1.0",
     "ioredis": "^5.4.1",
     "jose": "^6.2.3",
+    "livekit-server-sdk": "^2.17.0",
     "nanoid": "^5.0.9",
     "pino-pretty": "^11.3.0",
     "prom-client": "^15.1.3",
