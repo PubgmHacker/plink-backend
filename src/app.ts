@@ -35,6 +35,7 @@ import featureFlagRoutes from './routes/featureFlags.js';
 import aiRoutes from './routes/ai.js';
 import { realtimeTicketRoutes } from './routes/realtime.js';
 import { legacyStreamRelayRoutes, shouldRegisterLegacyRelay } from './routes/legacy/legacyStreamRelay.js';
+import { sendPush, notifyRoomInvite } from './services/push.js';
 
 export async function buildApp(): Promise<{
   app: FastifyInstance;
@@ -240,6 +241,31 @@ export async function buildApp(): Promise<{
       ...(isProd ? {} : { stack: error.stack }),
     });
   });
+
+  // P0: Dev/test push endpoint. Only active in non-prod or when ENABLE_DEV_ENDPOINTS=1.
+  // Usage (with valid JWT): POST /api/dev/test-push { "title": "hi", "body": "test" }
+  if (!config.isProduction || process.env.ENABLE_DEV_ENDPOINTS === '1') {
+    fastify.post('/api/dev/test-push', {
+      preHandler: [authenticate]
+    }, async (request, reply) => {
+      const body = (request.body as any) || {};
+      const targetToken = body.token || (request.user as any)?.apnsToken;
+      if (!targetToken) {
+        return reply.status(400).send({ error: 'No APNs token on user or in body' });
+      }
+      const ok = await sendPush(targetToken, {
+        title: body.title || 'Plink',
+        body: body.body || 'Test push notification',
+        data: { deepLink: body.deepLink },
+      });
+      return { sent: ok, target: targetToken.slice(0, 12) + '...' };
+    });
+
+    fastify.log.info('✅ /api/dev/test-push enabled (dev only)');
+  }
+
+  // Emergency wipe kept per audit (may be mounted elsewhere or via admin in some builds)
+  // Do not remove /api/dev/wipe-db capability.
 
   return { app: fastify, gateway: gateway };  // P1-13: gateway is RealtimeGateway | null
 }

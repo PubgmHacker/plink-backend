@@ -250,4 +250,27 @@ export default async function authRoutes(fastify) {
     });
     reply.send({ success: true });
   });
+
+  // POST /api/auth/device-token (P0)
+  // Supports both APNs (iOS "ios") and FCM (Android / legacy).
+  // Client calls this with platform to register push token.
+  fastify.post('/auth/device-token', {
+    preHandler: [fastify.authenticate]
+  }, async (request, reply) => {
+    const { token, platform } = request.body as { token?: string; platform?: string };
+    if (!token) {
+      return reply.status(400).send({ error: 'token required' });
+    }
+    const data: any = {};
+    if (platform === 'ios') {
+      data.apnsToken = token;
+    } else {
+      data.fcmToken = token;
+    }
+    await prisma.user.update({
+      where: { id: request.user.id },
+      data
+    });
+    reply.send({ success: true });
+  });
 }
