@@ -9,13 +9,17 @@ RUN apt-get update -y && apt-get install -y \
 
 WORKDIR /app
 COPY package*.json ./
-RUN npm ci --omit=dev || npm install --omit=dev
+# Install all deps (including dev) so tsc and prisma CLI are available for build
+RUN npm ci
 COPY . .
 RUN chmod +x start.sh
 RUN npx prisma generate
 
 # Build TypeScript to dist/
 RUN npm run build
+
+# Remove devDependencies to keep image small for production
+RUN npm prune --production
 
 EXPOSE 8080
 

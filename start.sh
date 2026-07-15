@@ -23,7 +23,7 @@ echo "==== Step 2/3: prisma migrate deploy ===="
 npx prisma migrate deploy < /dev/null
 echo "==== Step 2/3 done ===="
 
-echo "==== Step 3/3: build + start (node dist/server.js) ===="
-npm run build
+echo "==== Step 3/3: start (node dist/server.js) ===="
+# Build happens at Docker image build time (see Dockerfile)
 export NODE_ENV="${NODE_ENV:-production}"
 exec node dist/server.js
