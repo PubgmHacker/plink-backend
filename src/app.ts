@@ -122,6 +122,13 @@ export async function buildApp(): Promise<{
   await fastify.register(aiRoutes, { prefix: '/api' });
   await fastify.register(realtimeTicketRoutes, { prefix: '/api' });
 
+  // P0 voice (LiveKit): stub token endpoint.
+  // Returns 503 so client falls back gracefully (mesh for <=4 or disable voice).
+  // Full implementation requires separate LiveKit SFU deployment + config.LIVEKIT_SFU + /api/rtc/token proxy.
+  fastify.post('/api/rtc/token', { preHandler: [authenticate] }, async (_request, reply) => {
+    reply.status(503).send({ error: 'LiveKit SFU not configured', hint: 'Deploy LiveKit server and set LIVEKIT_SFU + credentials.' });
+  });
+
   // ── LEGACY stream relay (gated — App Store compliant builds skip) ──────
   // Runbook §7: 'APP_STORE_COMPLIANT=1: только официальный embedded/provider
   // flow. extraction/relay endpoints выключены и не входят в production
