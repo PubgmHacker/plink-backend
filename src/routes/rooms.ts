@@ -41,7 +41,7 @@ export default async function roomRoutes(fastify, _options) {
     fastify.post('/rooms', {
         preHandler: [fastify.authenticate]
     }, async (request, reply) => {
-        const { name, maxParticipants, mediaItem, privacy, password, hostName } = request.body;
+        const { name, maxParticipants, mediaItem, privacy, password, hostName, appearanceTheme } = request.body;
 
         // 🔧 Pack v3 FIX: JWT содержит только {id}, без username.
         // Берём username из БД, fallback на body.hostName, потом 'Unknown'.
@@ -58,6 +58,12 @@ export default async function roomRoutes(fastify, _options) {
             ? await hashRoomPassword(password) 
             : null;
 
+        // P1 Room themes: attach appearanceTheme into mediaItem JSON (no schema change)
+        const persistedMedia = mediaItem ? { ...mediaItem } : {};
+        if (appearanceTheme) {
+            (persistedMedia as any).appearanceTheme = String(appearanceTheme);
+        }
+
         // 🔧 SAFETY: simple create — no endedAt column (uses isActive: false
         // to mark ended rooms instead, history preserved in /rooms/mine query).
         const room = await prisma.room.create({
@@ -67,7 +73,7 @@ export default async function roomRoutes(fastify, _options) {
                 hostName: resolvedHostName,
                 code: generateRoomCode(),
                 maxParticipants: maxParticipants || 10,
-                mediaItem: mediaItem ? JSON.stringify(mediaItem) : null,
+                mediaItem: Object.keys(persistedMedia).length ? JSON.stringify(persistedMedia) : null,
                 privacy: privacy || 'public',
                 password: hashedPassword,
                 hostIsPremium: await getUserPremiumStatus(prisma, request.user.id),
