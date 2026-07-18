@@ -7,7 +7,7 @@
 // enum currently handles:
 //   sync.state, sync.state.snapshot, clock.probe.reply, chat.broadcast,
 //   reaction.broadcast, participant.joined, participant.left, error,
-//   session.ready, server.draining
+//   session.ready, role.changed, server.draining, dm.pin.broadcast
 //
 // If a new ServerMessage type is added to the backend union, this test
 // will fail until the Swift enum is updated to decode it.
@@ -29,6 +29,7 @@ const SWIFT_HANDLED_TYPES = new Set([
   'session.ready',
   'role.changed',  // P1-64
   'server.draining',
+  'dm.pin.broadcast',
 ]);
 
 describe('Backend ↔ iOS contract parity (P0-17 regression)', () => {
